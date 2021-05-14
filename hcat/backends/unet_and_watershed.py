@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 from typing import Dict, Optional
 
-import src.functional
-from src.models.r_unet import wtrshd_model as WatershedUnet
-from src.models.rcnn import rcnn
+import functional
+from models.r_unet import wtrshd_model as WatershedUnet
+from models.rcnn import rcnn
 
 
 class UNetWatershed(nn.Module):
@@ -25,11 +25,11 @@ class UNetWatershed(nn.Module):
 
         self.ffcnn = rcnn(path=frcnn_model_path).to(device).eval()
 
-        self.predict_cell_candidates = src.functional.PredictCellCandidates(self.ffcnn, device=device)
-        self.predict_segmentation_mask = src.functional.PredictSemanticMask(model=self.model, device=device)
-        self.generate_seed_map = src.functional.GenerateSeedMap()
+        self.predict_cell_candidates = functional.PredictCellCandidates(self.ffcnn, device=device)
+        self.predict_segmentation_mask = functional.PredictSemanticMask(model=self.model, device=device)
+        self.generate_seed_map = functional.GenerateSeedMap()
 
-        self.instance_mask_from_prob = src.functional.InstanceMaskFromProb()
+        self.instance_mask_from_prob = functional.InstanceMaskFromProb()
 
     def forward(self, image: torch.Tensor, channel: Optional[int] = 1) -> torch.Tensor:
         """

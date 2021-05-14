@@ -1,11 +1,11 @@
 from sklearn.cluster import DBSCAN
 import torch
-from src.transforms import erosion
-import src.utils
-from src import ShapeError
+from transforms import erosion, _crop
+import utils
+from exceptions import ShapeError
 
 
-from typing import Tuple, List, Dict
+from typing import Tuple, Dict
 
 import numpy as np
 import skimage
@@ -17,7 +17,6 @@ import skimage.segmentation
 import skimage.transform
 import skimage.feature
 
-from src.transforms import _crop
 
 import scipy.ndimage
 import scipy.ndimage.morphology
@@ -73,9 +72,9 @@ class EmbeddingToProbability(nn.Module):
         embedding [B, 3, X, Y, Z] -> euclidean_norm[B, 1, X, Y, Z]
         euclidean_norm = sqrt(Δx^2 + Δy^2 + Δz^2) where Δx = (x_embed - x_centroid_i)
 
-                             /    (e_ix - C_kx)^2       (e_iy - C_ky)^2        (e_iz - C_kz)^2   \
+                             |    (e_ix - C_kx)^2       (e_iy - C_ky)^2        (e_iz - C_kz)^2   |
           prob_k(e_i) = exp |-1 * ----------------  -  -----------------   -  ------------------  |
-                            \     2*sigma_kx ^2         2*sigma_ky ^2          2 * sigma_kz ^2  /
+                            |     2*sigma_kx ^2         2*sigma_ky ^2          2 * sigma_kz ^2  |
 
         :param embedding: [B, K=3, X, Y, Z] torch.Tensor where K is the likely centroid component: {X, Y, Z}
         :param centroids: [B, N, K_true=3] torch.Tensor where N is the number of instances in the image and K_true is centroid
@@ -583,7 +582,7 @@ class PredictSemanticMask(nn.Module):
         # Apply Padding by reflection to all edges of image
         # With pad size of (30, 30, 4)
         # im.shape = [1,4,100,100,10] -> [1, 4, 160, 160, 18]
-        image = src.utils.pad_image_with_reflections(torch.as_tensor(image), pad_size=PAD_SIZE)
+        image = utils.pad_image_with_reflections(torch.as_tensor(image), pad_size=PAD_SIZE)
 
         with torch.no_grad():
 
@@ -861,7 +860,7 @@ class IntensityCellReject(nn.Module):
         :param image:
         :return:
         """
-        mask, image = src.utils.crop_to_identical_size(mask, image)
+        mask, image = utils.crop_to_identical_size(mask, image)
 
         if mask.shape[1] == 1 and mask.max() >= 1:
             return self.color(mask, image)
@@ -895,7 +894,7 @@ class IntensityCellReject(nn.Module):
         :return:
         """
 
-        mask, image = src.utils.crop_to_identical_size(mask, image)
+        mask, image = utils.crop_to_identical_size(mask, image)
         ind = torch.ones(mask.shape[1], dtype=torch.long, device=mask.device)
 
         for i in range(mask.shape[1]):

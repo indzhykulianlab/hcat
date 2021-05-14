@@ -2,12 +2,12 @@ import torch
 import torchvision.transforms.functional
 import torch.nn.functional as F
 from kornia.augmentation import RandomAffine3D
-from PIL.Image import Image
 import numpy as np
 from typing import Dict, Tuple, Union, Sequence, List
 import elasticdeform
 import skimage.io as io
-from src import ShapeError
+from exceptions import ShapeError
+
 
 # -------------------------------- Assumptions ------------------------------#
 #                Every image is expected to be [C, X, Y, Z]                  #
@@ -698,7 +698,7 @@ class random_crop(transform):
 
         example:
             >>> import torch
-            >>> from src.transforms import random_crop
+            >>> from src import random_crop
             >>>
             >>> in_image = torch.rand((300, 150, 27))
             >>> masks = torch.rand((300, 150, 27)).gt(0.5)

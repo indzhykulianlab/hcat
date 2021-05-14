@@ -1,22 +1,20 @@
-import time
+from utils import calculate_indexes, remove_edge_cells, remove_wrong_sized_cells
+from cell import Cell
+import utils
+from cochlea import Cochlea
+import functional
 
-from src.utils import calculate_indexes, remove_edge_cells, remove_wrong_sized_cells
-import src.functional
-from src.cell import Cell
-from src.cochlea import Cochlea
+from backends.spatial_embedding import SpatialEmbedding
+from backends.unet_and_watershed import UNetWatershed
 
-from src.backends.spatial_embedding import SpatialEmbedding
-from src.backends.unet_and_watershed import UNetWatershed
 
 import torch
 import click
 from tqdm import tqdm
 from itertools import product
-import matplotlib.pyplot as plt
 import numpy as np
-from src.explore_lif import Reader, get_xml
+from explore_lif import get_xml
 
-import glob
 import os.path
 import gc
 import psutil
@@ -58,7 +56,7 @@ def analyze(f: str, channel: int, render: bool,
                                        scale=25,
                                        figure=figure).requires_grad_(False)
 
-        image_base = src.utils.load(f, 'TileScan 1 Merged', verbose=True)
+        image_base = utils.load(f, 'TileScan 1 Merged', verbose=True)
 
         if image_base is None:  # Break if couldn't load stuff!
             return None
@@ -118,7 +116,7 @@ def analyze(f: str, channel: int, render: bool,
             x_exp[x_exp < 0] = 0
             y_exp[y_exp < 0] = 0
             destination = out_img[:, x_exp[0]:x_exp[1], y_exp[0]:y_exp[1], :]
-            destination, new_ids = src.functional.merge_regions(destination.to(out.device), out, 0.35)
+            destination, new_ids = functional.merge_regions(destination.to(out.device), out, 0.35)
 
             out_img[:, x_exp[0]:x_exp[1], y_exp[0]:y_exp[1], :] = destination.cpu()
 
@@ -139,7 +137,7 @@ def analyze(f: str, channel: int, render: bool,
         del image_base  # memory issues are tight. removing image and image_base help
         gc.collect()
 
-        equal_spaced_points, percentage, apex = src.functional.get_cochlear_length(out_img, equal_spaced_distance=0.01)
+        equal_spaced_points, percentage, apex = functional.get_cochlear_length(out_img, equal_spaced_distance=0.01)
 
         # Figure out the frequency location of each cell
         for c in cells:

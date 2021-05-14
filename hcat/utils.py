@@ -1,14 +1,14 @@
 import torch
-from typing import List, Tuple, Dict, Optional, Union
-
-from src.explore_lif import Reader, get_xml
-from src.transforms import _crop
-
+from typing import List, Tuple, Optional, Union
+from explore_lif import Reader
+from transforms import _crop
 import numpy as np
 import skimage.io as io
-
-
 import matplotlib.pyplot as plt
+
+
+class ShapeError(Exception):
+    pass
 
 
 def calculate_indexes(pad_size: int, eval_image_size: int,

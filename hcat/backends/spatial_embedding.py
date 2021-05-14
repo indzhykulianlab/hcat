@@ -1,16 +1,11 @@
 import torch
 import torch.nn as nn
 
-import src.functional
-from src.models.r_unet_LTS import r_unet_LTS as RUnetLTS
-from src.models.r_unet import embed_model as RUnet
-from src.transforms import median_filter, erosion
-import src.utils
+from models.r_unet import embed_model as RUnet
+from transforms import median_filter, erosion
+import functional
 
-import matplotlib.pyplot as plt
-import skimage.io as io
-
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, Optional
 
 
 class SpatialEmbedding(nn.Module):
@@ -37,17 +32,16 @@ class SpatialEmbedding(nn.Module):
 
         self.model = self._model_loader(model_loc, device)
 
-        self.vector_to_embedding = torch.jit.script(
-            src.functional.VectorToEmbedding(scale=scale).requires_grad_(False)).eval()
-        self.embedding_to_probability = torch.jit.script(
-            src.functional.EmbeddingToProbability(scale=scale).requires_grad_(False)).eval()
-        self.estimate_centroids = src.functional.EstimateCentroids(scale=scale).requires_grad_(False)
+        self.vector_to_embedding = torch.jit.script(functional.VectorToEmbedding(scale=scale).requires_grad_(False)).eval()
+
+        self.embedding_to_probability = torch.jit.script(functional.EmbeddingToProbability(scale=scale).requires_grad_(False)).eval()
+        self.estimate_centroids = functional.EstimateCentroids(scale=scale).requires_grad_(False)
 
         self.filter = median_filter(kernel_targets=3, rate=1, device=device)
         self.binary_erosion = erosion(device=device)
 
-        self.intensity_rejection = torch.jit.script(src.functional.IntensityCellReject().requires_grad_(False))
-        self.nms = src.functional.nms().requires_grad_(False)
+        self.intensity_rejection = torch.jit.script(functional.IntensityCellReject().requires_grad_(False))
+        self.nms = functional.nms().requires_grad_(False)
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         """
@@ -121,24 +115,12 @@ class SpatialEmbedding(nn.Module):
 
     @staticmethod
     def _model_loader(path: str, device):
-        try:
-            model = torch.jit.script(RUnet(in_channels=1).requires_grad_(False)).to(device)
-
-            if path is not None:
-                checkpoint = torch.load(path)
-                if isinstance(checkpoint, dict):
-                    checkpoint = checkpoint['model_state_dict']
-                model.load_state_dict(checkpoint)
-
-        except RuntimeError:  # This is likely due to model weights not lining up.
-
-            model = torch.jit.script(RUnetLTS(1, 4).requires_grad_(False)).to(device)
-
-            if path is not None:
-                checkpoint = torch.load(path)
-                if isinstance(checkpoint, dict):
-                    checkpoint = checkpoint['model_state_dict']
-                model.load_state_dict(checkpoint)
+        model = torch.jit.script(RUnet(in_channels=1).requires_grad_(False)).to(device)
+        if path is not None:
+            checkpoint = torch.load(path)
+            if isinstance(checkpoint, dict):
+                checkpoint = checkpoint['model_state_dict']
+            model.load_state_dict(checkpoint)
 
         for m in model.modules():
             if isinstance(m, nn.BatchNorm3d):

@@ -3,9 +3,8 @@ from __future__ import annotations
 import torch
 import time
 import matplotlib.pyplot as plt
-from typing import List, Dict, Tuple, Union, Optional
-from src.cell import Cell
-from src.utils import calculate_indexes
+from typing import List, Union, Optional
+from cell import Cell
 from io import BytesIO
 
 # import lzma as compalg
@@ -14,13 +13,9 @@ import lz4.frame as compalg
 from xml.etree import ElementTree
 import glob
 import os.path
-from itertools import product
 import re
 from skimage.io import imsave
 import skimage.segmentation
-from tqdm import trange
-
-import ray
 
 
 class Cochlea:

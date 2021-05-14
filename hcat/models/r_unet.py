@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torch
-from src.transforms import _crop
+from transforms import _crop
 from typing import List
 
 

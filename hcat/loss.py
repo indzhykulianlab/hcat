@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-from typing import Tuple, Optional
+from typing import Optional
 
-from src.utils import crop_to_identical_size
+from src import crop_to_identical_size
 
 
 class jaccard(nn.Module):

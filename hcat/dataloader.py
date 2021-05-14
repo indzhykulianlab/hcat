@@ -8,7 +8,7 @@ import skimage.io as io
 from typing import Dict
 from skimage.morphology import ball
 
-import src.transforms as t
+import src as t
 
 
 class dataset(DataLoader):

@@ -1,6 +1,6 @@
 import torch
 from typing import Tuple, Dict
-from src.transforms import _crop
+from transforms import _crop
 
 
 @torch.jit.script
@@ -79,9 +79,10 @@ class Cell:
 
 
         """
-        ind = torch.argmin(curvature[1, :].sub(self.loc[1]).pow(2) + curvature[0, :].sub(self.loc[2]).pow(2))
-        self.percent_loc = ind/curvature.shape[1] # float
-        self.frequency = A * (10**(a*self.percent_loc) - K)
+        if curvature is not None:
+            ind = torch.argmin(curvature[1, :].sub(self.loc[1]).pow(2) + curvature[0, :].sub(self.loc[2]).pow(2))
+            self.percent_loc = ind/curvature.shape[1] # float
+            self.frequency = A * (10**(a*self.percent_loc) - K)
 
 
 if __name__ == '__main__':
