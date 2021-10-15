@@ -91,7 +91,7 @@ class Backend(nn.Module):
     @staticmethod
     def _model_loader_url(url: str, model, device: str):
         """ loads model from url """
-        path = os.path.join(src.__path__[0], 'spatial_embedding.trch')
+        path = os.path.join(hcat.__path__[0], 'spatial_embedding.trch')
 
 
         if not os.path.exists(path):

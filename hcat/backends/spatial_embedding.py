@@ -35,8 +35,8 @@ class SpatialEmbedding(Backend):
 
         super(SpatialEmbedding, self).__init__()
 
-        # self.url = 'https://github.com/buswinka/hcat/blob/master/modelfiles/spatial_embedding.trch?raw=true'
-        self.url = None
+        self.url = 'https://github.com/buswinka/hcat/blob/master/modelfiles/spatial_embedding.trch?raw=true'
+        # self.url = None
         self.scale = torch.tensor(scale)
         self.device = device
         self.sigma = sigma.to(device)

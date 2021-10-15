@@ -1,9 +1,8 @@
 import hcat.lib.functional
-import hcat.lib.functional as functional
 from hcat.lib.utils import calculate_indexes, load, cochlea_to_xml, correct_pixel_size, scale_to_hair_cell_diameter
 from hcat.lib.cell import Cell
 from hcat.lib.cochlea import Cochlea
-from hcat.backends.detection import HairCellFasterRCNN
+from hcat.backends.detection import FasterRCNN_from_url
 
 import torch
 from torch import Tensor
@@ -15,7 +14,7 @@ import torchvision.ops
 import skimage.io as io
 
 import os.path
-from typing import Optional, List, Dict
+from typing import List, Dict
 
 
 # DOCUMENTED
@@ -93,10 +92,9 @@ def _detect(f: str, curve_path: str = None, cell_detection_threshold: float = 0.
                   '\x1b[0m')
 
         # Initalize the model...
-        model = HairCellFasterRCNN.to(device).eval()
-        state_dict = torch.load('./models_lts/Max_project_detection_resnet.trch')
-        model.load_state_dict(state_dict)
-        model = model.eval().to(device)
+        model = FasterRCNN_from_url(url='https://github.com/buswinka/hcat/blob/master/modelfiles/detection.trch?raw=true', device=device)
+        model.eval()
+
 
         # Initalize curvature detection
         predict_curvature = hcat.lib.functional.PredictCurvature(erode=3)

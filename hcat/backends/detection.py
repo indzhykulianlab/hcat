@@ -1,8 +1,13 @@
 import torchvision
 import torch.nn.functional as F
 import torch.nn as nn
+import os.path
+import re
+import torch
+import wget
 
 from torchvision.ops import MultiScaleRoIAlign
+from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.anchor_utils import AnchorGenerator
 from torchvision.models.detection.generalized_rcnn import GeneralizedRCNN
 from torchvision.models.detection.rpn import RPNHead, RegionProposalNetwork
@@ -10,6 +15,8 @@ from torchvision.models.detection.roi_heads import RoIHeads
 from torchvision.models.detection.transform import GeneralizedRCNNTransform
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone, _validate_trainable_layers, mobilenet_backbone
 
+import hcat
+from hcat.backends.backend import Backend
 
 _possible_names = ['ResNet', 'resnet18', 'resnet34', 'resnet50',
              'resnet101', 'resnet152', 'resnext50_32x4d', 'resnext101_32x8d', 'wide_resnet50_2', 'wide_resnet101_2']
@@ -306,5 +313,41 @@ def fasterrcnn_generic_fpn(architecture_name: str, pretrained=False, progress=Tr
 
 HairCellFasterRCNN = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
 HairCellFasterRCNN_NeXt101 = fasterrcnn_generic_fpn('resnext101_32x8d', pretrained=False, pretrained_backbone=False)
+
+
+def FasterRCNN_from_url(url: str, device: str, model: FasterRCNN = HairCellFasterRCNN):
+    """ loads model from url """
+    path = os.path.join(hcat.__path__[0], 'Max_project_detection_resnet.trch')
+
+    if not os.path.exists(path) and _is_url(url):
+        print('Downloading Model File: ')
+        wget.download(url=url, out=path)
+        print(' ')
+    else:
+        raise ValueError(f'Url is not valid: {url}')
+
+    model = model.requires_grad_(False)
+    checkpoint = torch.load(path, map_location=torch.device('cpu'))
+    model = model.to(device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+
+    for m in model.modules():
+        if isinstance(m, nn.BatchNorm3d):
+            m.eval()
+
+    return model
+
+
+def _is_url(input: str):
+    regex = re.compile(
+        r'^(?:http|ftp)s?://'  # http:// or https://
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain...
+        r'localhost|'  # localhost...
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
+        r'(?::\d+)?'  # optional port
+        r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+
+    # Return true if its a url
+    return re.match(regex, input) is not None
 
 
