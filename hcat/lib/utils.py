@@ -213,7 +213,13 @@ def pad_image_with_reflections(image: torch.Tensor, pad_size: Tuple[int] = (30, 
 ########################################################################################################################
 #                                                         Generics
 ########################################################################################################################
+def warn(message: str, color: str) -> None:
+    c = {'green' : '\x1b[1;32;40m',
+         'yellow': '\x1b[1;33;40m',
+         'red'   : '\x1b[1;31;40m',
+         'norm'  : '\x1b[0m'}  # green, yellow, red, normal
 
+    print(c[color] + message + c['norm'])
 
 def load(file: str,  header_name: Optional[str] = 'TileScan 1 Merged',
          verbose: bool = False) -> Union[None, np.array]:

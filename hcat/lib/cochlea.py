@@ -19,8 +19,6 @@ import re
 from skimage.io import imsave
 import skimage.segmentation
 
-import torchvision.transforms.functional
-
 class Cochlea:
     def __init__(self,
                  mask: Tensor = None,
@@ -349,7 +347,7 @@ class Cochlea:
         return mask
 
     @graceful_exit('\x1b[1;31;40m' + 'ERROR: csv generation failed.' + '\x1b[0m')
-    def write_csv(self, filename: Optional[Union[bool, str]] = False) -> None:
+    def write_csv(self, filename: Optional[Union[bool, str]] = None) -> None:
         """
         Write results of cochlea object to a csv file for futher statistical analysis.
 
@@ -359,35 +357,52 @@ class Cochlea:
         :param filename: filename to save csv as. If unset, uses image filename.
         :return: None
         """
-        label = 'cellID,frequency,percent_loc,x_loc,y_loc,z_loc,volume,summed,'
-        for c in ['myo', 'dapi', 'actin', 'gfp']:
-            label += f'{c}_mean,{c}_median,{c}_std,{c}_var,{c}_min,{c}_max,{c}_%zero,{c}_%saturated,'
+        if self.analysis_type == 'segment':
+            label = 'cellID,frequency,percent_loc,x_loc,y_loc,z_loc,volume,summed,'
+            for c in ['myo', 'dapi', 'actin', 'gfp']:
+                label += f'{c}_mean,{c}_median,{c}_std,{c}_var,{c}_min,{c}_max,{c}_%zero,{c}_%saturated,'
 
-        # print(filename)
+            # print(filename)
 
-        if filename is None and self.filename is not None:
-            filename = os.path.splitext(self.filename)[0] + '.csv'  # Remove .lif and add .csv
-        elif filename is None and self.filename is None:
-            filename = 'analysis.csv'
+            if filename is None and self.filename is not None:
+                filename = os.path.splitext(self.filename)[0] + '.csv'  # Remove .lif and add .csv
+            elif filename is None and self.filename is None:
+                filename = 'analysis.csv'
 
-        f = open(filename, 'w')
-        f.write(f'Filename: {self.filename}\n')
-        f.write(f'Analysis Date: {self.analysis_date}\n')
-        f.write(f'Treatment: {self.analysis_date}\n')
-        f.write(label[:-1:] + '\n')  # index to remove final comma
+            f = open(filename, 'w')
+            f.write(f'Filename: {self.filename}\n')
+            f.write(f'Analysis Date: {self.analysis_date}\n')
+            f.write(label[:-1:] + '\n')  # index to remove final comma
 
-        for cell in self.cells:
-            f.write(f'{cell.id},{cell.frequency},{cell.percent_loc},')
-            f.write(f'{cell.loc[1]},{cell.loc[2]},{cell.loc[3]},{cell.volume},{cell.summed},')
+            for cell in self.cells:
+                f.write(f'{cell.id},{cell.frequency},{cell.percent_loc},')
+                f.write(f'{cell.loc[1]},{cell.loc[2]},{cell.loc[3]},{cell.volume},{cell.summed},')
 
-            for id in cell.channel_names:
-                f.write(f'{cell.channel_stats[id]["mean"]},{cell.channel_stats[id]["median"]},{cell.channel_stats[id]["std"]},{cell.channel_stats[id]["var"]},')
-                f.write(f'{cell.channel_stats[id]["min"]},{cell.channel_stats[id]["max"]},{cell.channel_stats[id]["%zero"]},{cell.channel_stats[id]["%saturated"]},')
-            f.write('\n')
-        f.close()
+                for id in cell.channel_names:
+                    f.write(f'{cell.channel_stats[id]["mean"]},{cell.channel_stats[id]["median"]},{cell.channel_stats[id]["std"]},{cell.channel_stats[id]["var"]},')
+                    f.write(f'{cell.channel_stats[id]["min"]},{cell.channel_stats[id]["max"]},{cell.channel_stats[id]["%zero"]},{cell.channel_stats[id]["%saturated"]},')
+                f.write('\n')
+            f.close()
+        elif self.analysis_type == 'detect':
+            label = 'cellID,type,score,frequency,percent_loc,x_loc,y_loc'
 
-    # @graceful_exit('\x1b[1;31;40m' + 'ERROR: Figure Render failed.' + '\x1b[0m')
-    def make_fig(self, filename: Optional[str] = None) -> None:
+            if filename is None and self.path is not None:
+                filename = os.path.splitext(self.path)[0] + '.csv'  # Remove .lif and add .csv
+            elif filename is None and self.path is None:
+                filename = 'analysis.csv'
+            f = open(filename, 'w')
+            f.write(f'Filename: {self.filename}\n')
+            f.write(f'Analysis Date: {self.analysis_date}\n')
+            f.write(label[:-1:] + '\n')  # index to remove final comma
+
+            for cell in self.cells:
+                f.write(f'{cell.id},{cell.type},{cell.scores},{cell.frequency},{cell.percent_loc},')
+                f.write(f'{cell.loc[1]},{cell.loc[2]}')
+                f.write('\n')
+            f.close()
+
+    @graceful_exit('\x1b[1;31;40m' + 'ERROR: Figure Render failed.' + '\x1b[0m')
+    def make_segment_fig(self, filename: Optional[str] = None) -> None:
         """
         Make summary figure for quick interpretation of results.
         :param filename: filename to save figure as. If unset, uses image filename.

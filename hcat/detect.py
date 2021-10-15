@@ -1,8 +1,11 @@
 import hcat.lib.functional
+import hcat.lib.functional as functional
 from hcat.lib.utils import calculate_indexes, load, cochlea_to_xml, correct_pixel_size, scale_to_hair_cell_diameter
 from hcat.lib.cell import Cell
 from hcat.lib.cochlea import Cochlea
 from hcat.backends.detection import FasterRCNN_from_url
+from hcat.backends.detection import HairCellFasterRCNN
+from hcat.lib.utils import warn
 
 import torch
 from torch import Tensor
@@ -14,7 +17,7 @@ import torchvision.ops
 import skimage.io as io
 
 import os.path
-from typing import List, Dict
+from typing import Optional, List, Dict
 
 
 # DOCUMENTED
@@ -32,23 +35,13 @@ def _detect(f: str, curve_path: str = None, cell_detection_threshold: float = 0.
     """
     print('Initializing hair cell detection algorithm...')
     if f is None:
-        print('\x1b[1;31;40m' + 'ERROR: No File to Analyze... \nAborting.' + '\x1b[0m')
+        warn('ERROR: No File to Analyze... \nAborting.', color='red')
         return None
     if not pixel_size:
-        print('\x1b[1;33;40m'
-              'WARNING: Pixel Size is not set. Defaults to 288.88 nm x/y. Consider suplying value for optimal performance.'
-              '\x1b[0m')
+        warn('WARNING: Pixel Size is not set. Defaults to 288.88 nm x/y. '
+             'Consider suplying value for optimal performance.', color='yellow')
 
     with torch.no_grad():
-
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        if device == 'cuda':
-            print('\x1b[1;32;40mCUDA: GPU successfully initialized!\x1b[0m')
-        else:
-            print('\x1b[1;33;40m'
-                  'WARNING: GPU not present or CUDA is not correctly intialized for GPU accelerated computation. '
-                  'Analysis may be slow.'
-                  '\x1b[0m')
 
         # Load and preprocess Image
         image_base = load(f, 'TileScan 1 Merged', verbose=True)  # from hcat.lib.utils
@@ -59,24 +52,19 @@ def _detect(f: str, curve_path: str = None, cell_detection_threshold: float = 0.
 
         dtype = image_base.dtype if dtype is None else dtype
         scale: int = hcat.lib.utils.get_dtype_offset(dtype)
-
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         temp = np.zeros(shape)
         temp = np.concatenate((temp, image_base)) / scale * 255
-        io.imsave(f[:-4:]+'.png', temp.transpose((1,2,0)))
 
         c, x, y = image_base.shape
         print(
             f'DONE: shape: {image_base.shape}, min: {image_base.min()}, max: {image_base.max()}, dtype: {image_base.dtype}')
 
         if image_base.max() < scale * 0.33:
-            print('\x1b[1;33;40m'
-                  f'WARNING: Image max value less than 1/3 the scale factor for bit depth. Image Max: {image_base.max()},'
-                  f' Scale Factor: {scale}, dtype: {dtype}. Readjusting scale to 1.5 time Image max.'
-                  '\x1b[0m')
-            scale = image_base.max() * 1.5
-
-
+              warn(f'WARNING: Image max value less than 1/3 the scale factor for bit depth. Image Max: {image_base.max()},'
+                   f' Scale Factor: {scale}, dtype: {dtype}. Readjusting scale to 1.5 time Image max.', color='yellow')
+              scale = image_base.max() * 1.5
 
         image_base = torch.from_numpy(image_base.astype(np.uint16) / scale).to(device)
 
@@ -91,7 +79,11 @@ def _detect(f: str, curve_path: str = None, cell_detection_threshold: float = 0.
         # normalize around zero
         image_base.sub_(0.5).div_(0.5)
 
-
+        if device == 'cuda':
+            warn('CUDA: GPU successfully initialized!', color='green')
+        else:
+            warn('WARNING: GPU not present or CUDA is not correctly intialized for GPU accelerated computation. '
+                  'Analysis may be slow.', color='yellow')
 
         # Initalize the model...
         model = FasterRCNN_from_url(url='https://github.com/buswinka/hcat/blob/master/modelfiles/detection.trch?raw=true', device=device)
@@ -161,10 +153,8 @@ def _detect(f: str, curve_path: str = None, cell_detection_threshold: float = 0.
         curvature, distance, apex = predict_curvature(max_projection, cells, curve_path)
 
         if curvature is None:
-            print('\x1b[1;33;40mWARNING: ' +
-                  'All three methods to predict hair cell path have failed. Frequency Mapping functionality is limited.'
-                  'Consider Manual Calculation.'
-                  + '\x1b[0m')
+            warn('WARNING: All three methods to predict hair cell path have failed. Frequency Mapping functionality is '
+                 'limited. Consider Manual Calculation.', color='yellow')
 
         # curvature estimation really only works if there is a lot of tissue...
         if distance is not None and distance.max() > 4000:
@@ -173,12 +163,15 @@ def _detect(f: str, curve_path: str = None, cell_detection_threshold: float = 0.
 
         else:
             curvature, distance, apex = None, None, None
-            print('\x1b[1;33;40mWARNING: ' +
-                  'Predicted Cochlear Distance is below 4000um. Not sufficient information to determine cell frequency.'
-                  + '\x1b[0m')
+            warn('WARNING: Predicted Cochlear Distance is below 4000um. Not sufficient '
+                 'information to determine cell frequency.', color='yellow')
 
         xml = get_xml(f) if f.endswith('.lif') else None
         filename = os.path.split(f)[-1]
+
+        # remove weird cell ID's
+        for i, c in enumerate(cells): c.id = i+1
+
 
         # Store in compressible object for further use
         c = Cochlea(mask=None,
@@ -192,10 +185,11 @@ def _detect(f: str, curve_path: str = None, cell_detection_threshold: float = 0.
                     cells=cells,
                     apex=apex)
 
-        if save_xml: cochlea_to_xml(c)
+        c.write_csv()
 
+        if save_xml: cochlea_to_xml(c)
         if save_fig: c.make_detect_fig(image_base)
-        # c.make_cochleogram()
+
         print('')
         return c
 
