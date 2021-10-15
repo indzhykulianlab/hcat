@@ -9,7 +9,9 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     packages=setuptools.find_packages(),
     python_requires='>=3',
-    entry_points = {'console_scripts': ['hcat = hcat.main:analyze']},
+    entry_points = {'console_scripts': ['hcat-segment=hcat.main:segment',
+                                        'hcat-detect=hcat.main:detect',
+                                        'hcat=hcat.main:cli']},
     install_requires = [
         'kornia>=0.5.2',
         'numpy>=1.10.0',
