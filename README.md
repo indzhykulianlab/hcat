@@ -123,6 +123,13 @@ high signal-to-noise ratio and low background staining.
 
 #### OPTIONS                          
     --cell_detection_threshold        (float) Rejection for objects with mean cytosolic intensity below threshold
+    --curve_path                      (str) Path to collection of points for curve estimation
+    --dtype                           (str) Data type of input image: (uint8 or uint16)
+    --save_fig                        (flag) Render diagnostic figure containing cell detection information
+    --save_xml                        (flag) Save detections as xml format compatable with labelImg software
+    --pixel_size                      (int) X/Y pixel size in nm
+    --cell_diameter                   (int) Rough diameter of hair cell in pixels
+
 
 #### OUTPUT
 
@@ -136,11 +143,12 @@ To access `filename.cochela` in a python script:
 
 ```python
 import torch
-from src.lib.cell import Cell
-cochlea = torch.load('filename.cochlea')
+from hcat.lib.cell import Cell
+from typing import List
 
 # Detected cells are stored as "Cell" objects 
-cells: List[Cell] = cochela.cells
+cochlea = torch.load('filename.cochlea')
+cells: List[Cell] = cochlea.cells
 
 # To access each cell:
 for cell in cells:
