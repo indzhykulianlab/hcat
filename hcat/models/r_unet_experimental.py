@@ -6,17 +6,18 @@ from typing import List
 
 class r_unet(nn.Module):
     """ base class for spatial embedding and unet """
-    def __init__(self, in_channels=1, n=5):
+    def __init__(self, in_channels:  int = 1, n: int = 5, c: List[int] = [20, 25, 30]):
         super(r_unet, self).__init__()
 
         self.activation = nn.LeakyReLU()
 
-        c = [20, 25, 30]
+        # c = [15, 40, 80]
+        # c = [20, 25, 30]
         # c = [10, 20, 30]
 
         self.down_1 = r_block(in_channels, c[0], n, 1, 1)
-        self.down_2 = r_block(c[0], c[1], n, 2, 2)
-        self.down_3 = r_block(c[1], c[2], n, 3, 3)
+        self.down_2 = r_block(c[0], c[1], n, 1, 1)
+        self.down_3 = r_block(c[1], c[2], n, 1, 1)
 
         self.up_1 = r_block(c[2] + c[1], c[1], n)
         self.up_2 = r_block(c[1] + c[0], c[0], n)
@@ -24,11 +25,11 @@ class r_unet(nn.Module):
         self.out_embed = nn.Conv3d(c[0], 3, kernel_size=3, stride=1, dilation=1, padding=1)
         self.out_prob = nn.Conv3d(c[0], 1, kernel_size=3, stride=1, dilation=1, padding=1)
 
-        self.stride_1 = nn.Conv3d(c[0], c[0], kernel_size=3, stride=(3, 3, 2), dilation=1, padding=0)
-        self.stride_2 = nn.Conv3d(c[1], c[1], kernel_size=3, stride=(3, 3, 2), dilation=1, padding=0)
+        self.stride_1 = nn.Conv3d(c[0], c[0], kernel_size=3, stride=(2, 2, 2), dilation=1, padding=0)
+        self.stride_2 = nn.Conv3d(c[1], c[1], kernel_size=3, stride=(2, 2, 2), dilation=1, padding=0)
 
-        self.transpose_1 = nn.ConvTranspose3d(c[2], c[2], kernel_size=3, stride=(3, 3, 2), padding=0, dilation=1)
-        self.transpose_2 = nn.ConvTranspose3d(c[1], c[1], kernel_size=3, stride=(3, 3, 2), padding=0, dilation=1)
+        self.transpose_1 = nn.ConvTranspose3d(c[2], c[2], kernel_size=3, stride=(2, 2, 2), padding=0, dilation=1)
+        self.transpose_2 = nn.ConvTranspose3d(c[1], c[1], kernel_size=3, stride=(2, 2, 2), padding=0, dilation=1)
 
         self.tanh = nn.Tanh()
         self.sigmoid = nn.Sigmoid()
@@ -40,22 +41,36 @@ class r_unet(nn.Module):
 
 class embed_model(r_unet):
     """ for spatial embedding """
-    def __init__(self, in_channels: int = 1):
-        super(embed_model, self).__init__(in_channels=in_channels)
+    def __init__(self, in_channels: int = 1, n=5, c=[20, 25, 30]):
+        self.n = n
+        self.c = c
+        self.in_channels = in_channels
+
+        super(embed_model, self).__init__(in_channels=in_channels, n=n, c=c)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # print(f'Step in: {x.shape}')
         x = self.down_1(x)
+        # print(f'Step down1: {x.shape}: {self.stride_1(x).shape}')
         y = self.down_2(self.activation(self.stride_1(x)))
+        # print(f'Step down2: {y.shape}')
         z = self.down_3(self.activation(self.stride_2(y)))
+        # print(f'Step down3: {z.shape}')
         z = self.activation(self.transpose_1(z))
+        # print(f'Step transpose1: {z.shape}')
         z = self.up_1(torch.cat((crop(y, z.shape), z), dim=1))
+        # print(f'Step up1: {z.shape}')
         z = self.activation(self.transpose_2(z))
+        # print(f'Step transpose2: {z.shape}')
         z = self.up_2(torch.cat((crop(x, z.shape), z), dim=1))
+        # print(f'Step up2: {z.shape}')
 
         z = torch.cat((
             self.tanh(self.out_embed(z)),
             self.sigmoid(self.out_prob(z))
         ), dim=1)
+        # print(f'Step out: {z.shape}')
+        # raise ValueError
 
         return z
 

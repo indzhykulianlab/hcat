@@ -2,11 +2,13 @@ import torch
 import torchvision.transforms.functional
 import torch.nn.functional as F
 from kornia.augmentation import RandomAffine3D
+from PIL.Image import Image
 import numpy as np
 from typing import Dict, Tuple, Union, Sequence, List
 import elasticdeform
 import skimage.io as io
-from hcat.exceptions import ShapeError
+from hcat import ShapeError
+import matplotlib.pyplot as plt
 
 
 # -------------------------------- Assumptions ------------------------------#
@@ -23,6 +25,11 @@ class transform:
     def check_inputs(self, x: Dict[str, torch.Tensor]) -> None:
         """
         Checks inputs of a transform and raises errors if they are bad.
+
+        Necessary dict keys:
+            'image': [C, X, Y, Z] torch.Tensor
+            'masks': [C, X, Y, Z] torch.Tensor with identical x,y,z to image
+            'centroids': [C, K=3] torch.Tensor with C number of objects
 
         :param x: Dict[str, torch.Tensor] input to transform
         :return: None
@@ -44,13 +51,13 @@ class transform:
         if 'masks' not in x: raise KeyError('key "masks" not found in input dictionary.')
         if 'centroids' not in x: raise KeyError('key "centroids" not found in input dictionary.')
 
-        if x['image'].shape[1::] != x['masks'].shape[1::]:
+        if x['image'].shape[1::] != x['masks'].shape[1::] and x['masks'].numel() != 0:
             raise ShapeError(f'Shape of input["image"]: {x["image"].shape} != '
                                f'shape of input["masks"]: {x["masks"].shape}')
 
         for key in x:
             if x[key].device != x['image'].device:
-                raise RuntimeError(f'Tensors do not share same device.\n'
+                raise RuntimeError(f'Tensors of key: "{key}" do not share same device.\n'
                                    f'\t"image": {x["image"].device}\n'
                                    f'\t"masks": {x["masks"].device}\n'
                                    f'\t"centroids": {x["centroids"].device}\n')
@@ -173,10 +180,11 @@ class affine3d(transform):
 
     def __call__(self, data_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
-        Performs a 3d affine transformation on the image and mask
+        Performs an affine transformation on the image and mask
         Shears, rotates and scales the image randomly based on parameters defined at initialization
 
-        Adjusts for anisotropy stupidly
+        Adjusts for anisotropy stupidly....
+        performs a 2d version if data_dict['image'].shape[-1] == 1
 
         :param data_dict Dict[str, torch.Tensor]: data_dictionary from a dataloader. Has keys:
             key : val
@@ -189,27 +197,52 @@ class affine3d(transform):
         :return: data_dict Dict[str, torch.Tensor]: dictonary with identical keys as input, but with transformed values
         """
         self.check_inputs(data_dict)
-
         if torch.rand(1) < self.rate:
-            stack = torch.cat((data_dict['image'], data_dict['masks']), dim=0).unsqueeze(0)
-            b, c, x, y, z = stack.shape
-            bigstack = torch.zeros((b, c, x, y, z * 3))
+            if data_dict['image'].shape[-1] > 1:
+                stack = torch.cat((data_dict['image'], data_dict['masks']), dim=0).unsqueeze(0)
+                b, c, x, y, z = stack.shape
+                bigstack = torch.zeros((b, c, x, y, z * 3))
 
-            # stacks are nonisotropic. Hacky way to adjust for this.
-            for i in range(z):
-                bigstack[..., (3 * i) + 0] = stack[..., i]
-                bigstack[..., (3 * i) + 1] = stack[..., i]
-                bigstack[..., (3 * i) + 2] = stack[..., i]
+                # stacks are nonisotropic. Hacky way to adjust for this.
+                for i in range(z):
+                    bigstack[..., (3 * i) + 0] = stack[..., i]
+                    bigstack[..., (3 * i) + 1] = stack[..., i]
+                    bigstack[..., (3 * i) + 2] = stack[..., i]
 
-            bigstack = self.fun(bigstack.squeeze(0))                # Perform affine on expanded stack
+                bigstack = self.fun(bigstack.squeeze(0))                # Perform affine on expanded stack
 
-            for i in range(z):
-                stack[..., i] = bigstack[..., (3 * i) + 1]          # Return to nonisotropic
+                for i in range(z):
+                    stack[..., i] = bigstack[..., (3 * i) + 1]          # Return to nonisotropic
 
-            data_dict['image'] = stack[0, 0:-1:1, ...]
-            data_dict['masks'] = stack[0, [-1], ...]
+                data_dict['image'] = stack[0, 0:-1:1, ...]
+                data_dict['masks'] = stack[0, [-1], ...]
+
+            else:
+                # 2D implementation
+                angle = torch.FloatTensor(1).uniform_(self.angle['yaw'][0], self.angle['yaw'][1])
+                shear = torch.FloatTensor(1).uniform_(self.shear[0], self.shear[1])
+                scale = torch.FloatTensor(1).uniform_(self.scale[0], self.scale[1])
+                data_dict['image'] = _reshape(self._affine2d(_shape(data_dict['image']), angle, scale, shear))
+                data_dict['masks'] = _reshape(self._affine2d(_shape(data_dict['masks']), angle, scale, shear))
 
         return data_dict
+
+    @staticmethod
+    @torch.jit.script
+    def _affine2d(img: torch.Tensor, angle: torch.Tensor,
+                  scale: torch.Tensor, shear: torch.Tensor) -> torch.Tensor:
+        """
+        Assume img in shape [C, Z, X, Y] # FROM _shape
+
+        :param img:
+        :param gamma:
+        :param gain:
+        :return:
+        """
+        for c in range(img.shape[0]):
+            img[c, ...] = torchvision.transforms.functional.affine(img[c, ...], angle=angle.item(), shear=[float(shear.item())],
+                                                                   scale=scale.item(), translate=[0,0])
+        return img
 
 
 class colormask_to_mask(transform):
@@ -218,8 +251,9 @@ class colormask_to_mask(transform):
 
     def __call__(self, data_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
-        Some Geometric transforms may alter the locations of cells so drastically that the centroid may no longer
-        be accurate. This recalculates the centroids based on the current mask.
+        Some transformations are done on "colormasks" in which the mask is a integer tensor with values between 1 and N
+        objects in the image. This function transforms the "colormask" to a boolean tensor of shape [N,X,Y,Z] where N is the
+        number of objects. Pixels assigned a value of True belong to that object.
 
         :param data_dict Dict[str, torch.Tensor]: data_dictionary from a dataloader. Has keys:
             key : val
@@ -297,16 +331,32 @@ class elastic_deformation(transform):
         dtype = image.dtype
 
         if torch.rand(1) < self.rate:
-            displacement = np.random.randn(3, self.x_grid, self.y_grid, self.z_grid) * self.scale
-            image = elasticdeform.deform_grid(image, displacement, axis=(1, 2, 3))
-            mask = elasticdeform.deform_grid(mask, displacement, axis=(1, 2, 3), order=0)
 
-            image[image < 0] = 0.0
-            image[image > 1] = 1.0
-            image.astype(dtype)
+            # 3D
+            if image.shape[-1] != 1:
+                displacement = np.random.randn(3, self.x_grid, self.y_grid, self.z_grid) * self.scale
+                image = elasticdeform.deform_grid(image, displacement, axis=(1, 2, 3))
+                mask = elasticdeform.deform_grid(mask, displacement, axis=(1, 2, 3), order=0)
 
-            data_dict['image'] = torch.from_numpy(image).to(device)
-            data_dict['masks'] = torch.from_numpy(mask).to(device)
+                image[image < 0] = 0.0
+                image[image > 1] = 1.0
+                image.astype(dtype)
+                data_dict['image'] = torch.from_numpy(image).to(device)
+                data_dict['masks'] = torch.from_numpy(mask).to(device)
+
+            # 2D
+            elif image.shape[-1] == 1:
+                displacement = np.random.randn(2, self.x_grid, self.y_grid) * self.scale
+                image = elasticdeform.deform_grid(image[..., 0], displacement, axis=(1, 2))
+                mask = elasticdeform.deform_grid(mask[..., 0], displacement, axis=(1, 2), order=0)
+
+                image[image < 0] = 0.0
+                image[image > 1] = 1.0
+                image.astype(dtype)
+                data_dict['image'] = torch.from_numpy(image).to(device).unsqueeze(-1) # correct for z reduction
+                data_dict['masks'] = torch.from_numpy(mask).to(device).unsqueeze(-1)
+
+
 
         return data_dict
 
@@ -366,7 +416,7 @@ class erosion(transform):
 
 
     def _is_tensor(self, input: torch.Tensor) -> torch.Tensor:
-        "Assume [B, C, X, Y, Z]"
+        "Assumes [C, X, Y, Z]"
         if input.device != self.kernel.device:
             raise ValueError(f'Expected Image Device to be {self.kernel.device} not {input.device}')
         if input.dtype != self.kernel.dtype:
@@ -648,7 +698,7 @@ class random_affine(transform):
     def _affine(img: torch.Tensor, angle: torch.Tensor, translate: torch.Tensor, scale: torch.Tensor,
                 shear: torch.Tensor) -> torch.Tensor:
                                                          """
-                                                         Not to be publicly accessed! Only called through src.transforms.affine
+                                                         Not to be publicly accessed! Only called through hcat.transforms.affine
 
                                                          A jit scriptable wrapped version of torchvision.transforms.functional.affine
                                                          Cannot, by rule, pass a dict to a torchscript function, necessitating this function
@@ -661,7 +711,7 @@ class random_affine(transform):
 
                                                          correct implementation looks like
                                                          ```python
-                                                         from src.transforms import _shape, _reshape, _affine
+                                                         from hcat.transforms import _shape, _reshape, _affine
                                                          angle = torch.tensor([0])
                                                          scale = torch.tensor([0])
                                                          shear = torch.tensor([0])
@@ -698,7 +748,7 @@ class random_crop(transform):
 
         example:
             >>> import torch
-            >>> from src import random_crop
+            >>> from hcat.train.transforms import random_crop
             >>>
             >>> in_image = torch.rand((300, 150, 27))
             >>> masks = torch.rand((300, 150, 27)).gt(0.5)
@@ -706,7 +756,7 @@ class random_crop(transform):
             >>> in_data = {'image': in_image, 'mask': masks, 'centroids': torch.Tensor([])}
             >>> out_data: Dict[str, torch.Tensor] = transform(in_data)
             >>> assert out_data['image'].shape =
-                (256, 150, 26)
+                (256, 150, 26epoch_range.desc = 'Loss: ' + '{:.5f}'.format(torch.tensor(epoch_loss).mean().item()))
 
 
         :param data_dict Dict[str, torch.Tensor]: data_dictionary from a dataloader. Has keys:
@@ -721,7 +771,11 @@ class random_crop(transform):
 
         :raises: RuntimeError | Trys to find a valid image. Throws error after 10 failed attemts.
         """
-        self.check_inputs(data_dict)
+        try:
+            self.check_inputs(data_dict)
+        except:
+            print(data_dict['image'].shape)
+            raise AttributeError
 
         shape = data_dict['image'].shape
 
@@ -732,6 +786,8 @@ class random_crop(transform):
         x = torch.randint(x_max, (1, 1)).item()
         y = torch.randint(y_max, (1, 1)).item()
         z = torch.randint(z_max, (1, 1)).item()
+
+        assert data_dict['masks'].sum() != 0
 
         # Check if the crop doesnt contain any positive labels.
         # If it does, try generating new points
@@ -745,11 +801,16 @@ class random_crop(transform):
             z = torch.randint(z_max, (1, 1)).item()
 
             if num_try > 10:
-                raise RuntimeError("Exceded maximum try's to find a valid image.")
+                raise ValueError("Exceded maximum try's to find a valid image.")
 
 
         data_dict['image'] = _crop(data_dict['image'], x=x, y=y, z=z, w=self.w, h=self.h, d=self.d)
         data_dict['masks'] = _crop(data_dict['masks'], x=x, y=y, z=z, w=self.w, h=self.h, d=self.d)
+
+        mask = data_dict['masks']
+        c, x, y, z, = mask.shape
+        i = mask.reshape(c, -1).sum(-1) != 0
+        data_dict['masks'] = data_dict['masks'][i,...]
 
         return data_dict
 
@@ -884,35 +945,6 @@ class to_cuda(transform):
         return data_dict
 
 
-# class to_tensor(transform):
-#     def __init__(self):
-#         super(to_tensor, self).__init__()
-#         pass
-#
-#     def __call__(self, data_dict: Dict[str, Union[torch.Tensor, Image, np.ndarray]]) -> Dict[str, torch.Tensor]:
-#         """
-#         Convert a PIL image or numpy.ndarray to a torch.Tensor
-#
-#         :param data_dict Dict[str, torch.Tensor]: data_dictionary from a dataloader. Has keys:
-#             key : val
-#             'image' : torch.Tensor of size [C, X, Y, Z] where C is the number of colors, X,Y,Z are the mask height,
-#                       width, and depth
-#             'masks' : torch.Tensor of size [I, X, Y, Z] where I is the number of identifiable objects in the mask
-#             'centroids' : torch.Tensor of size [I, 3] where dimension two is the [X, Y, Z] position of the centroid
-#                           for instance i
-#
-#         :return: data_dict Dict[str, torch.Tensor]: dictonary with identical keys as input, but with transformed values
-#         """
-#         if not isinstance(data_dict, dict): raise ValueError(f'Does not accept input of type: {type(data_dict)}')
-#         if 'image' not in data_dict: raise KeyError('key "image" not found in input dictionary.')
-#         if data_dict['image'].ndim != 4: raise ShapeError('Image is not a 4D tensor.')
-#
-#
-#         if isinstance(data_dict['image'], np.ndarray) or isinstance(data_dict['image'], Image):
-#             data_dict['image'] = torchvision.transforms.functional.to_tensor(data_dict['image'])
-#         return data_dict
-
-
 class transformation_correction(transform):
     def __init__(self, min_cell_volume: int = 4000):
         super(transformation_correction, self).__init__()
@@ -1000,6 +1032,113 @@ class transformation_correction(transform):
         return image
 
 
+# Faster RCNN!
+class box_to_mask(transform):
+    def __init__(self):
+        super(box_to_mask, self).__init__()
+
+    def __call__(self, data_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        Converts boxes to a mask for geometric transformations later!
+
+        NOTE: data_dict must contain two aditional params: 'boxes' and 'labels' !!!!
+
+
+        :param data_dict Dict[str, torch.Tensor]: data_dictionary from a dataloader. Has keys:
+            key : val
+            'image' : torch.Tensor of size [C, X, Y, Z=1] where C is the number of colors, X,Y,Z are the mask height,
+                      width, and depth
+            'masks': None
+            'centroids' : None
+            'boxes': torch.Tensor of size [N,4] where N is the number of objects in the 2D image!
+            'boxes': torch.Tensor of size [K] where K is the class label
+
+        :return: data_dict Dict[str, torch.Tensor]: dictonary with identical keys but notable exceptions
+            key: val
+            'masks': torch.Tensor of size [N, X, Y, Z=1] where X and Y are the same as the input image. N is the number
+                     of objects in the image.
+        """
+        self.check_inputs(data_dict)
+
+        if 'boxes' not in data_dict: raise ValueError('Key: "boxes" not found in input dictonary.')
+        # if isinstance(data_dict['boxes'], torch.Tensor): raise ValueError(f'Value pair for key: "boxes" must be of type: torch.Tensor, not: {type(data_dict["boxes"])}')
+        if data_dict['boxes'].ndim != 2: raise ShapeError(f'Expected value pair of key: "boxes" to have ndim=2, not {data_dict["boxes"].ndim}')
+
+        device = data_dict['image'].device
+        _, x, y, z = data_dict['image'].shape
+        n, _ = data_dict['boxes'].shape
+
+        mask = torch.zeros((n, x, y, z), device=device, dtype=torch.int)
+        for i in range(n):
+            x0, y0, x1, y1 = data_dict['boxes'][i, :]
+            mask[i, y0:y1, x0:x1, :] = data_dict['labels'][i] # class label
+        data_dict['masks'] = mask
+
+        return data_dict
+
+
+# Faster RCNN!
+class mask_to_box(transform):
+    def __init__(self):
+        super(mask_to_box, self).__init__()
+
+    def __call__(self, data_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        Performs inverse operation of box_to_mask!
+
+        NOTE: data_dict must contain two aditional params: 'boxes' and 'labels' !!!!
+
+
+        :param data_dict Dict[str, torch.Tensor]: data_dictionary from a dataloader. Has keys:
+            key : val
+            'image' : torch.Tensor of size [C, X, Y, Z=1] where C is the number of colors, X,Y,Z are the mask height,
+                      width, and depth
+            'masks': None
+            'centroids' : None
+            'boxes': torch.Tensor of size [N,4] where N is the number of objects in the 2D image!
+            'boxes': torch.Tensor of size [K] where K is the class label
+
+        :return: data_dict Dict[str, torch.Tensor]: dictonary with identical keys but notable exceptions
+            key: val
+            'masks': torch.Tensor of size [N, X, Y, Z=1] where X and Y are the same as the input image. N is the number
+                     of objects in the image.
+        """
+        self.check_inputs(data_dict)
+
+        if 'boxes' not in data_dict: raise ValueError('Key: "boxes" not found in input dictonary.')
+        if data_dict['masks'] is None: raise ValueError('Value pair to key: "masks" is, and must not be, None.')
+        # if isinstance(data_dict['boxes'], torch.Tensor): raise ValueError('Value pair for key: "boxes" must be of type: torch.Tensor')
+        if data_dict['boxes'].ndim != 2: raise ShapeError(
+            f'Expected value pair of key: "boxes" to have ndim=2, not {data_dict["boxes"].ndim}')
+
+        device = data_dict['image'].device
+        _, x, y, z = data_dict['image'].shape
+        n, _, _, _ = data_dict['masks'].shape
+
+        boxes = torch.zeros([n, 4], device=device)
+        labels = torch.zeros([n], device=device)
+        for i in range(n):
+            nonzero = torch.nonzero(data_dict['masks'][i, ...]) # Q, 3=[x,y,z]
+            labels[i] = data_dict['masks'][i,...].max()
+            if nonzero.numel() != 0:
+                x0 = torch.min(nonzero[:, 1])
+                x1 = torch.max(nonzero[:, 1])
+                y0 = torch.min(nonzero[:, 0])
+                y1 = torch.max(nonzero[:, 0])
+
+                boxes[i, 0] = x0
+                boxes[i, 1] = y0
+                boxes[i, 2] = x1
+                boxes[i, 3] = y1
+
+        data_dict['boxes'] = boxes
+        data_dict['masks'] = torch.empty((0,0,0,0), device=device)
+        data_dict['labels'] = labels.type(torch.int64)
+
+        return data_dict
+
+
+# Generic fast helper functions
 
 @torch.jit.script
 def _shape(img: torch.Tensor) -> torch.Tensor:
@@ -1045,14 +1184,7 @@ def _crop(img: torch.Tensor, x: int, y: int, z: int, w: int, h: int, d: int) -> 
     :param d: depth of crop box
     :return:
     """
-    if img.ndim == 4:
-        img = img[:, x:x + w, y:y + h, z:z + d]
-    elif img.ndim == 5:
-        img = img[:, :, x:x + w, y:y + h, z:z + d]
-    else:
-        raise IndexError('Unsupported number of dimensions')
-
-    return img
+    return img[..., x:x + w, y:y + h, z:z + d]
 
 
 if __name__ == '__main__':

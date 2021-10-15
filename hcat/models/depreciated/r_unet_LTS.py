@@ -1,28 +1,31 @@
 import torch.nn as nn
 import torch
-from hcat.train.transforms import _crop
+from src.train.transforms import _crop
 from typing import List
 
 
-class r_unet(nn.Module):
-    """ base class for spatial embedding and unet """
-    def __init__(self, in_channels=1, n=5):
-        super(r_unet, self).__init__()
+class r_unet_LTS(nn.Module):
+    """
+    LTS r_unet. Assumes 512 scale param
+
+    """
+    def __init__(self, in_channels=1, out_channels=4):
+        super(r_unet_LTS, self).__init__()
 
         self.activation = nn.LeakyReLU()
 
-        c = [20, 25, 30]
-        # c = [10, 20, 30]
+        # c = [20, 25, 30]
+        c = [10, 20, 30]
 
-        self.down_1 = r_block(in_channels, c[0], n, 1, 1)
-        self.down_2 = r_block(c[0], c[1], n, 2, 2)
-        self.down_3 = r_block(c[1], c[2], n, 3, 3)
+        self.down_1 = r_block(in_channels, c[0], 5, 1, 1)
+        self.down_2 = r_block(c[0], c[1], 5, 2, 2)
+        self.down_3 = r_block(c[1], c[2], 5, 3, 3)
 
-        self.up_1 = r_block(c[2] + c[1], c[1], n)
-        self.up_2 = r_block(c[1] + c[0], c[0], n)
+        self.up_1 = r_block(c[2] + c[1], c[1], 5)
+        self.up_2 = r_block(c[1] + c[0], c[0] + 10, 5)
 
-        self.out_embed = nn.Conv3d(c[0], 3, kernel_size=3, stride=1, dilation=1, padding=1)
-        self.out_prob = nn.Conv3d(c[0], 1, kernel_size=3, stride=1, dilation=1, padding=1)
+        self.out_embed = nn.Conv3d(c[0] + 10, 3, kernel_size=3, stride=1, dilation=1, padding=1)
+        self.out_prob = nn.Conv3d(c[0] + 10, 1, kernel_size=3, stride=1, dilation=1, padding=1)
 
         self.stride_1 = nn.Conv3d(c[0], c[0], kernel_size=3, stride=(3, 3, 2), dilation=1, padding=0)
         self.stride_2 = nn.Conv3d(c[1], c[1], kernel_size=3, stride=(3, 3, 2), dilation=1, padding=0)
@@ -35,15 +38,7 @@ class r_unet(nn.Module):
         self.softmax = nn.Softmax()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError
 
-
-class embed_model(r_unet):
-    """ for spatial embedding """
-    def __init__(self, in_channels: int = 1):
-        super(embed_model, self).__init__(in_channels=in_channels)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.down_1(x)
         y = self.down_2(self.activation(self.stride_1(x)))
         z = self.down_3(self.activation(self.stride_2(y)))
@@ -60,33 +55,16 @@ class embed_model(r_unet):
         return z
 
 
-class wtrshd_model(r_unet):
-    """ for watershed segmentation """
-    def __init__(self, in_channels: int = 4):
-        super(wtrshd_model, self).__init__(in_channels=in_channels)
-        self.out_embed = None
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.down_1(x)
-        y = self.down_2(self.activation(self.stride_1(x)))
-        z = self.down_3(self.activation(self.stride_2(y)))
-        z = self.activation(self.transpose_1(z))
-        z = self.up_1(torch.cat((crop(y, z.shape), z), dim=1))
-        z = self.activation(self.transpose_2(z))
-        z = self.up_2(torch.cat((crop(x, z.shape), z), dim=1))
-
-        z = self.sigmoid(self.out_prob(z))
-
-        return z
-
-
 class r_block(nn.Module):
     """
-    Recurrently applies a block to an input and outputs later.
+
+    Recurrently applies a block to an input and outputs later
+
     """
     def __init__(self, in_channels: int, out_channels: int, n_loop: int, dilation: int = 1, padding: int = 1):
         super(r_block, self).__init__()
 
+        self.activation = nn.LeakyReLU()
         self.n = n_loop
 
         self.conv1x1 = nn.Conv3d(in_channels * 2, in_channels, kernel_size=1)

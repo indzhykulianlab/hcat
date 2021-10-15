@@ -1,11 +1,12 @@
+import pandas
 from sklearn.cluster import DBSCAN
 import torch
-from hcat.transforms import erosion, _crop
-import hcat.utils as utils
-from hcat.exceptions import ShapeError
+from torch import Tensor
+from hcat.train.transforms import erosion
+import hcat.lib.utils
+from hcat import ShapeError
 
-
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Optional, List
 
 import numpy as np
 import skimage
@@ -17,34 +18,58 @@ import skimage.segmentation
 import skimage.transform
 import skimage.feature
 
+from hcat.train.transforms import _crop
+from hcat.lib.cell import Cell
+from hcat.lib.utils import graceful_exit
 
 import scipy.ndimage
 import scipy.ndimage.morphology
-from scipy.interpolate import splprep
+from scipy.interpolate import splprep, splev
 import GPy
 
 import torchvision.ops
 import torch.nn as nn
 
+import matplotlib.pyplot as plt
+
 
 class VectorToEmbedding(nn.Module):
-    def __init__(self, scale: int = 25):
-        self.scale = scale
+    def __init__(self, scale: Tensor = torch.tensor([25]), device='cuda'):
+        if not isinstance(scale, torch.Tensor):
+            scale = torch.tensor([scale])
+        self.scale = scale.to(device) if scale.numel() != 1 else torch.tensor([scale, scale, scale],
+                                                                            device=device).float()
         super(VectorToEmbedding, self).__init__()
 
-    def forward(self, vector: torch.Tensor) -> torch.Tensor:
+    def forward(self, vector: Tensor) -> Tensor:
         """
-        Constructs a mesh grid and adds the vector matrix to it
+        Constructs a mesh grid and adds the vector matrix to it.
 
-        :param vector:
-        :return:
+        Roughly performs the following operation.
+
+        embedding = vector + meshgrid(vector.shape)
+
+        Example:
+
+        >>> from hcat.lib.functional import VectorToEmbedding
+        >>> from hcat.models.r_unet import embed_model as model
+        >>> import torch
+        >>> image = torch.load('image.trch') # [B, C, X, Y, Z]
+        >>> vector = model(image)
+        >>> vec2emb = torch.jit.script(VectorToEmbedding)
+        >>> embedding = vec2emb(vector)
+
+
+        :param vector: [B, 3=[x,y,z], X, Y, Z] prediction vector from spatial embedding model
+        :return: [B, 3=[x,y,z], X, Y, Z] projected spatial embedding vector
         """
         if vector.ndim != 5: raise ShapeError('Expected input tensor ndim == 5')
 
-        num = self.scale
-        x_factor = 1 / num
-        y_factor = 1 / num
-        z_factor = 1 / num
+        num: Tensor = self.scale.float()
+
+        x_factor = 1 / num[0]
+        y_factor = 1 / num[1]
+        z_factor = 1 / num[2]
 
         xv, yv, zv = torch.meshgrid(
             [torch.linspace(0, x_factor * vector.shape[2], vector.shape[2], device=vector.device),
@@ -55,34 +80,43 @@ class VectorToEmbedding(nn.Module):
                           yv.unsqueeze(0).unsqueeze(0),
                           zv.unsqueeze(0).unsqueeze(0)), dim=1)
 
-        if self.training:
-            return mesh + vector
-        else:
-            return mesh.add_(vector)
+        # Return addition in place if not training
+        return mesh + vector if self.training else mesh.add_(vector)
 
 
 class EmbeddingToProbability(nn.Module):
-    def __init__(self, scale: int = 25):
+    def __init__(self, scale: Tensor = torch.tensor([25]), device='cuda'):
+        if not isinstance(scale, torch.Tensor):
+            scale = torch.tensor([scale])
+        self.scale = scale.to(device) if scale.numel() != 1 else torch.tensor([scale, scale, scale], device=device)
         super(EmbeddingToProbability, self).__init__()
-        self.scale = scale
 
-    def forward(self, embedding: torch.Tensor, centroids: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
+    def forward(self, embedding: Tensor, centroids: Tensor, sigma: Tensor) -> Tensor:
         """
         Calculates the euclidean distance between the centroid and the embedding
         embedding [B, 3, X, Y, Z] -> euclidean_norm[B, 1, X, Y, Z]
         euclidean_norm = sqrt(Δx^2 + Δy^2 + Δz^2) where Δx = (x_embed - x_centroid_i)
 
-                             |    (e_ix - C_kx)^2       (e_iy - C_ky)^2        (e_iz - C_kz)^2   |
+                             /    (e_ix - C_kx)^2       (e_iy - C_ky)^2        (e_iz - C_kz)^2   \
           prob_k(e_i) = exp |-1 * ----------------  -  -----------------   -  ------------------  |
-                            |     2*sigma_kx ^2         2*sigma_ky ^2          2 * sigma_kz ^2  |
+                            \     2*sigma_kx ^2         2*sigma_ky ^2          2 * sigma_kz ^2  /
 
-        :param embedding: [B, K=3, X, Y, Z] torch.Tensor where K is the likely centroid component: {X, Y, Z}
-        :param centroids: [B, N, K_true=3] torch.Tensor where N is the number of instances in the image and K_true is centroid
-                            {x, y, z}
-        :param sigma: torch.Tensor of shape = (1) or (embedding.shape)
+
+        Example:
+
+        >>> from hcat.lib.functional import EmbeddingToProbability
+        >>> import torch
+        >>> embed = torch.load('embed.trch') # [B, C, X, Y, Z]
+        >>> emb2prob = torch.jit.script(EmbeddingToProbability)
+        >>> probability = emb2prob(embed)
+
+
+        :param embedding: [B, K=3, X, Y, Z] embedding tensor where K is the likely centroid component: {X, Y, Z}
+        :param centroids: [B, N, K_true=3] object centroids where N is the number of instances in the image and K_true is centroid {x, y, z}
+        :param sigma: Tensor of shape = (1) or (embedding.shape)
         :return: [B, N, X, Y, Z] of probabilities for instance N
         """
-        num = torch.tensor([self.scale], device=centroids.device)
+        num = self.scale
 
         b, _, x, y, z = embedding.shape
         _, n, _ = centroids.shape
@@ -117,7 +151,7 @@ class EmbeddingToProbability(nn.Module):
                 prob[:, i, :, :, :] = torch.exp(
                     (euclidean_norm / sigma.view(centroids.shape[0], 3, 1, 1, 1)).mul(-1).sum(dim=1)).squeeze(1)
 
-        else:  # If in Eval Mode
+        else:  # If in Eval Mode - do a bunch of inplace operations for speed and memory efficiency
             for i in range(centroids.shape[1]):
                 euclidean_norm = (embedding - centroids[:, i, :].view(centroids.shape[0], 3, 1, 1, 1)).pow(2)
                 prob[:, i, :, :, :] = torch.exp(
@@ -126,72 +160,97 @@ class EmbeddingToProbability(nn.Module):
 
 
 @torch.jit.script
-def learnable_centroid(embedding: torch.Tensor, mask: torch.Tensor, method: str = 'mean') -> torch.Tensor:
+def learnable_centroid(embedding: Tensor, mask: Tensor, method: str = 'mean',
+                       scale: Tensor = torch.tensor([25])) -> Tensor:
     """
-    Estimates a center of attraction best predicted by the network. Take mean direction of vectors predicted for a
-    single object and takes that as the centroid of the object. In this way the model can learn where best to
-    predict a center.
+    Estimates a center of attraction best predicted by the network.
 
-    :param embedding:
-    :param mask:
-    :param method: ['mode' or 'mean']
-    :return: centroids {C, N, 3}
+    Take mean direction of vectors predicted for a single object and takes that as the centroid of the object.
+    In this way the model can learn where best to predict a center.
 
+    Example:
+
+    >>> from hcat.lib.functional import learnable_centroid
+    >>> import torch
+    >>> embed = torch.load('embed.trch') # [B, C, X, Y, Z] predicted embedding
+    >>> mask = torch.load('mask.trch') # [B, C, X, Y, Z] ground truth mask
+    >>> centroids = learnable_centroid(embed)
+
+    :param embedding: [B, C, X, Y, Z] predicted embedding tensor from deep learning model
+    :param mask: [B, C, X, Y, Z] ground truth mask
+    :param method: ['mode' or 'mean'] method by which to calculate centroids. Either can calculate the centroid of via "median" or "mean" of predicted embeddings
+    :return: [C, N, k=3] centroids for N objects
     """
-    if method != 'mean' and method != 'mode':
-        raise NotImplementedError(f'Cannot estimate centroids with method {method}')
+    with torch.no_grad():
+        if method != 'mean' and method != 'mode':
+            raise NotImplementedError(f'Cannot estimate centroids with method {method}')
 
-    shape = embedding.shape
-    mask = _crop(mask, 0, 0, 0, shape[2], shape[3], shape[4])  # from src.transforms._crop
-    centroid = torch.zeros((mask.shape[0], mask.shape[1], 3), device=mask.device)
+        shape = embedding.shape
+        mask = _crop(mask, 0, 0, 0, shape[2], shape[3], shape[4])  # from hcat.transforms._crop
+        centroid = torch.zeros((mask.shape[0], mask.shape[1], 3), device=mask.device)
 
-    # Loop over each instance and take the mean of the vectors multiplied by the mask (0 or 1)
-    for i in range(mask.shape[1]):
-        ind = torch.nonzero(embedding * mask[:, i, ...].unsqueeze(1))  # [:, [B, N, X, Y, Z]]
-        center = torch.tensor([-10, -10, -10], device=mask.device)
+        # Loop over each instance and take the mean of the vectors multiplied by the mask (0 or 1)
+        for i in range(mask.shape[1]):
+            ind = torch.nonzero(embedding * mask[:, i, ...].unsqueeze(1))  # [:, [B, N, X, Y, Z]]
+            center = torch.tensor([-10, -10, -10], device=mask.device)
 
-        # Guess Centroids by average location of all vectors or just by the most common value (mean vs mode).
-        if method == 'mean' and ind.shape[0] > 1:
-            center = embedding[ind[:, 0], :, ind[:, 2], ind[:, 3], ind[:, 4]].mean(0)
-        elif method == 'mode' and ind.shape[0] > 1:
-            center = embedding[ind[:, 0], :, ind[:, 2], ind[:, 3], ind[:, 4]].mul(512).round().mode(0)[0].div(
-                512)  # mode gives vals and indicies
+            # Guess Centroids by average location of all vectors or just by the most common value (mean vs mode).
+            if method == 'mean' and ind.shape[0] > 1:
+                center = embedding[ind[:, 0], :, ind[:, 2], ind[:, 3], ind[:, 4]].mean(0)
+            elif method == 'mode' and ind.shape[0] > 1:
+                center = embedding[ind[:, 0], :, ind[:, 2], ind[:, 3], ind[:, 4]].mul(scale).round().mode(0)[0].div(scale)  # mode gives vals and indicies
 
-        centroid[:, i, :] = center
+            centroid[:, i, :] = center
 
-    return centroid
+        return centroid * scale.to(centroid.device)
 
 
 class EstimateCentroids(nn.Module):
-    def __init__(self, downsample: int = 3,
-                 n_erode: int = 3,
-                 eps: float = 2,
-                 min_samples: int = 70,
-                 scale: int = 25):
+    def __init__(self, downsample: int = 1,
+                 n_erode: int = 4,
+                 eps: float = 1,
+                 min_samples: int = 10,
+                 scale: Tensor = torch.tensor([25]),
+                 device='cuda'):
+        """
+        Estimates centroids of objects in a spatial embedding matrix.
+
+        :param downsample: factor by which to downsample embedding matrix, higher numbers increase computational speed.
+        :param n_erode: Erodes probability map, higher numbers prefentiall select voxels near object centers.
+        :param eps: tuning parameter for DBSCAN
+        :param min_samples: minimum number of voxels for an image to be detected
+        :param scale: scaling factor of vector embedding. Must be identical to VectorToEmbedding
+        :param device: physical device by which to perform computation on.
         """
 
-        :param downsample:
-        :param n_erode:
-        :param eps:
-        :param min_samples:
-        :param scale:
-        """
         super(EstimateCentroids, self).__init__()
         self.downsample = downsample
         self.n_erode = n_erode
         self.eps = eps
         self.min_samples = min_samples
+        if not isinstance(scale, torch.Tensor):
+            scale = torch.tensor([scale])
+        self.scale = scale.to(device) if scale.numel != 1 else torch.tensor([scale, scale, scale], device=device)
 
-        self.scale = scale
-
-    def forward(self, embedding: torch.Tensor, probability_map: torch.Tensor = None,
-                ) -> torch.Tensor:
+    def forward(self, embedding: Tensor, probability_map: Tensor = None,
+                ) -> Tensor:
         """
+        Estimates centroids of objects in a spatial embedding matrix.
 
+        Employs DBSCAN clustering algorithm to predict embedding clusters in a predicted embedding matrix
 
-        :param embedding:
-        :param probability_map:
-        :return:
+        Example:
+
+        >>> from hcat.lib.functional import EstimateCentroids
+        >>> import torch
+        >>> embed = torch.load('embed.trch') # [B, C, X, Y, Z] predicted embedding
+        >>> mask = torch.load('mask.trch') # [B, C, X, Y, Z] ground truth mask
+        >>> estimate = EstimateCentroids()
+        >>> centroids = estimate(embed, mask)
+
+        :param embedding: [B, C=3, X, Y, Z] predicted spatial embedding matrix
+        :param probability_map: [B, C=1, X, Y, Z] predicted object probability mask
+        :return: [B, N, K=3] Predicted centroids
         """
         num = self.scale
 
@@ -266,13 +325,13 @@ class EstimateCentroids(nn.Module):
 
 
 @torch.jit.script
-def _iou(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def _iou(a: Tensor, b: Tensor) -> Tensor:
     """
     Takes two identically sized tensors and computes IOU of the Masks
     Assume a, b are boolean tensors with values 0 and 1
 
-    :param a: torch.Tensor - Bool
-    :param b: torch.Tensor - Bool
+    :param a: Tensor - Bool
+    :param b: Tensor - Bool
 
     :return: IoU
     """
@@ -287,28 +346,29 @@ class nms(nn.Module):
     def __init__(self):
         super(nms, self).__init__()
 
-    def forward(self, mask: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
+    def forward(self, mask: Tensor, threshold: Optional[float] = 0.5) -> Tensor:
         """
+        Performs non-maximum supression on object probability masks.
 
-        SLOW SLOW SLOW SLOW can we speed it up?
+        Example:
 
+        >>> from hcat.lib.functional import nms
+        >>> import torch
+        >>> cell_mask = torch.load('cell_segmentation_masks.trch') #  [B, N, X, Y, Z]
+        >>> nms = torch.jit.script(nms) # [1, 20, 100, 100, 10]
+        >>> keep = nms(cell_mask)
+        >>> cell_mask = cell_mask[:, keep, ...] # [1, 15, 100, 100, 10]
 
-        Maybe index area around cell, try to see if anything is near it?
-        Sum up regions and check if cells overlap at all?
-
-        Assume mask is in shape [1, N, X, Y, Z]
-
-        :param mask:
-        :param threshola:
-        :return: index of channels to keep!
+        :param mask: [B, N, X, Y, Z] predicted cell instance segmentation mask
+        :param threshold: iou rejection threshold
+        :return: [N] index of remaining cells
         """
-        if mask.dtype != torch.float:
-            raise ValueError('Mask dtype must be float')
-
         n = mask.shape[1]
-
         if n == 0:
             return torch.zeros(n).gt(0)
+
+        if mask.dtype != torch.float:
+            raise ValueError('Mask dtype must be float', mask.dtype)
 
         max_instances = mask.shape[1]
         ind = torch.ones(max_instances, dtype=torch.int, device=mask.device)
@@ -329,137 +389,307 @@ class nms(nn.Module):
         return ind > 0
 
 
-def get_cochlear_length(image: torch.Tensor,
-                        equal_spaced_distance: float = 0.1,
-                        diagnostics=False) -> torch.Tensor:
-    """
-    Input an image ->
-    max project ->
-    reduce image size ->
-    run b-spline fit of resulting data on myosin channel ->
-    return array of shape [2, X] where [0,:] is x and [1,:] is y
-    and X is ever mm of image
+# @graceful_exit('\x1b[1;31;40m' + 'ERROR: Could not calculate cochlear length.' + '\x1b[0m')
+class PredictCurvature:
+    def __init__(self,
+                 voxel_dim=(.28888, .28888, .28888 * 3), # um
+                 equal_spaced_distance: float = 0.01,
+                 erode: int = 3,
+                 scale_factor=10,
+                 method=None):
 
-    IMAGE: torch image
-    CALIBRATION: calibration info
+        self.equal_spaced_distance = equal_spaced_distance
+        self.erode = erode
+        self.method = method
+        self.voxel_dim = voxel_dim
+        self.scale_factor = scale_factor
 
-    :parameter image: [C, X, Y, Z] bool tensor
-    :return: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        - equal_spaced_points: [2, N] torch.Tensor of pixel locations
-        - percentage: [N] torch.Tensor of cochlear percentage
-        - apex: torch.Tensor location of apex (guess)
-    """
+        _methods = ['mask', 'maxproject', None]
+        if not self.method in _methods:
+            raise RuntimeError(f'Unknown method: {method}.')
 
-    image = image[0, ...].sum(-1).gt(3)
-    assert image.max() > 0
+    def __call__(self,
+                 image: Optional[Tensor] = None,
+                 cells: Optional[List[Cell]] = None,
+                 csv: Optional[str] = None) -> Tuple[Tensor, Tensor, Tensor]:
+        """
+        Try's various methods to predict curvature.
+        If user provides a csv of curvature default to this.
+        In order -> CSV, Myo7a, Mask
 
-    image = skimage.transform.downscale_local_mean(image.numpy(), (10, 10)) > 0
-    image = skimage.morphology.binary_closing(image)
+        :param image:
+        :param mask:
+        :param csv:
+        :return:
+        """
+        curvature, distance, apex = None, None, None
+        if self.method is None:
+            if csv is not None:
+                curvature, distance, apex = self.fitEPL(csv)
 
-    image = skimage.morphology.diameter_closing(image, 10)
+            if curvature is None and cells is not None:
+                try:
+                    # Estimate cochlear curvature. Try the
+                    _, x, y, _ = image.shape
+                    mask = torch.zeros((1, x, y, 1))
+                    for c in cells:
+                        x0, y0, x1, y1 = torch.round(c.boxes).int()
+                        mask[:, y0:y1, x0:x1, :] = 1
+                    curvature, distance, apex = self.fit(mask, 'mask', diagnostic=False)
 
-    for i in range(2):
-        image = skimage.morphology.binary_erosion(image)
+                except Exception:
+                    curvature, distance, apex = None, None, None
 
-    image = skimage.morphology.skeletonize(image, method='lee')
+            try_again = curvature is None and image is not None
+            try_again = try_again or distance.max() < 4000
 
-    # first reshape to a logical image format and do a max project
-    # for development purposes only, might want to predict curve from base not mask
-    # if False: #  image.ndim > 2:
-    #     image = image.transpose((1, 2, 3, 0)).mean(axis=3) / 2 ** 16
-    #     image = skimage.exposure.adjust_gamma(image[:, :, 2], .2)
-    #     image = skimage.filters.gaussian(image, sigma=2) > .5
-    #     image = skimage.morphology.binary_erosion(image)
+            if try_again:
+                try:
+                    curvature, distance, apex = self.fit(image, 'maxproject')
+                except Exception:
+                    curvature, distance, apex = None, None, None
 
-    # Sometimes there are NaN or inf we have to take care of
-    image[np.isnan(image)] = 0
-    try:
-        center_of_mass = np.array(scipy.ndimage.center_of_mass(image))
-        while image[int(center_of_mass[0]), int(center_of_mass[1])] > 0:
-            center_of_mass += 1
-    except ValueError:
-        center_of_mass = [image.shape[0], image.shape[1]]
 
-    # Turn the binary image into a list of points for each pixel that isnt black
 
-    x, y = image.nonzero()
-    x += -int(center_of_mass[0])
-    y += -int(center_of_mass[1])
+        elif self.method == 'mask':
+            _, x, y, _ = image.shape
+            mask = torch.zeros((1, x, y, 1))
+            for c in cells:
+                x0, y0, x1, y1 = torch.round(c.boxes).int()
+                mask[:, y0:y1, x0:x1, :] = 1
+            curvature, distance, apex = self.fit(mask, 'mask', diagnostic=False)
+        elif self.method == 'maxproject':
+            curvature, distance, apex = self.fit(image, 'maxproject', diagnostic=False)
+        else:
+            raise ValueError(f'Unknown method: {self.method}')
 
-    # Transform into spherical space
-    r = np.sqrt(x ** 2 + y ** 2)
-    theta = np.arctan2(x, y)
+        return curvature, distance, apex
 
-    # sort by theta
-    ind = theta.argsort()
-    theta = theta[ind]
-    r = r[ind]
+    def fit(self, base: Tensor, method: str, diagnostic=False) -> Tuple[Tensor, Tensor, Tensor]:
+        """
+        Predicts cochlear curvature from a predicted segmentation mask.
 
-    # there will be a break somewhere because the cochlea isnt a full circle
-    # Find the break and subtract 2pi to make the fun continuous
-    loc = np.abs(theta[0:-2:1] - theta[1:-1:1])
+        Uses beta spline fits as well as a gaussian process regression to estimate a contiguous curve in spherical space.
 
-    # Correct if largest gap is larger than 20 degrees
-    if np.abs(loc.max()) > 20 / 180 * np.pi:
-        theta[loc.argmax()::] += -2 * np.pi
-        ind = theta.argsort()[1:-1:1]
+        .. warning:
+           Will not raise an error upon failure, instead returns None and prints to standard out
+
+        :parameter image: [C, X, Y, Z] bool tensor
+        :return: Tuple[Tensor, Tensor, Tensor]:
+            - equal_spaced_points: [2, N] Tensor of pixel locations
+            - percentage: [N] Tensor of cochlear percentage
+            - apex: Tensor location of apex (guess)
+        """
+
+        if method == 'mask':
+            image = base[0, ..., 0].bool().int()
+            image = self._preprocess(image, diagnostic)
+        elif method == 'stack':
+            image = base[0, ...].sum(-1).gt(1.5)
+            image = self._preprocess(image, diagnostic)
+        elif method == 'maxproject':
+            gt = 0.55
+            max = 0
+            while max == 0:
+                image = base[0, ..., 0].gt(gt)
+                image = self._preprocess(image, diagnostic)
+                max = image.max()
+                gt -= 0.15
+
+        # Sometimes there are NaN or inf we have to take care of
+        image[np.isnan(image)] = 0
+        try:
+            center_of_mass = np.array(scipy.ndimage.center_of_mass(image))
+            while image[int(center_of_mass[0]), int(center_of_mass[1])] > 0:
+                center_of_mass += 1
+        except ValueError:
+            center_of_mass = [image.shape[0], image.shape[1]]
+
+        # Turn the binary image into a list of points for each pixel that isnt black
+        x, y = image.nonzero()
+        x += -int(center_of_mass[0])
+        y += -int(center_of_mass[1])
+
+        # Transform into spherical space
+        r = np.sqrt(x ** 2 + y ** 2)
+        theta = np.arctan2(x, y)
+
+        # sort by theta
+        ind = theta.argsort()
         theta = theta[ind]
         r = r[ind]
 
-    # run a spline in spherical space after sorting to get a best approximated fit
-    tck, u = splprep([theta, r], w=np.ones(len(r)) / len(r), s=1.5e-6, k=3)
-    u_new = np.arange(0, 1, 1e-4)
+        # there will be a break somewhere because the cochlea isnt a full circle
+        # Find the break and subtract 2pi to make the fun continuous
+        loc = np.abs(theta[0:-2:1] - theta[1:-1:1])
 
-    # get new values of theta and r for the fitted line
-    # theta_, r_ = splev(u_new, tck)
 
-    kernel = GPy.kern.RBF(input_dim=1, variance=95., lengthscale=5.)  # 100 before
+        # Correct if largest gap is larger than 20 degrees
+        if np.abs(loc.max()) > 20 / 180 * np.pi:
+            theta[loc.argmax()::] += -2 * np.pi
+            ind = theta.argsort()[1:-1:1]
+            theta = theta[ind]
+            r = r[ind]
 
-    if not np.any(np.isnan(theta)) or not np.any(np.isnan(r)) or np.any(np.isinf(theta)) or not np.any(np.isinf(r)):
-        return None, None, None
+        # run a spline in spherical space after sorting to get a best approximated fit
+        tck, u = splprep([theta, r], w=np.ones(len(r)) / len(r), s=0.5e-6, k=3)
 
-    m = GPy.models.GPRegression(theta[::2, np.newaxis], r[::2, np.newaxis], kernel)
-    # SEGFAULT SOMEWHERE HERE!!!
-    m.optimize()
-    theta = np.linspace(theta.min(), theta.max(), 10000)
-    r_, _ = m.predict(theta[:, np.newaxis])
-    r_ = r_[:, 0]
-    theta_ = theta
+        # Run a Gaussian Process Fit, seems to work better than spline
+        kernel = GPy.kern.RBF(input_dim=1, variance=50., lengthscale=5.)  # 100 before
 
-    x_spline = r_ * np.cos(theta_) + center_of_mass[1]
-    y_spline = r_ * np.sin(theta_) + center_of_mass[0]
+        # Might fail, throw an error
+        if np.any(np.isnan(theta)) or np.any(np.isnan(r)) or np.any(np.isinf(theta)) or np.any(np.isinf(r)):
+            print('\x1b[1;31;40m' + 'ERROR: Could not calculate cochlear length.' + '\x1b[0m')
+            return None, None, None
 
-    # x_spline and y_spline have tons and tons of data points.
-    # We want equally spaced points corresponding to a certain distance along the cochlea
-    # i.e. we want a point ever mm which is not guaranteed by x_spline and y_spline
+        m = GPy.models.GPRegression(theta[::2, np.newaxis], r[::2, np.newaxis], kernel)
+        m.optimize()
 
-    # THIS ONLY REMOVES STUFF, DOESNT INTERPOLATE!!!!!!
-    equal_spaced_points = []
-    for i, coord in enumerate(zip(x_spline, y_spline)):
-        if i == 0:
-            base = coord
-            equal_spaced_points.append(base)
-        if np.sqrt((base[0] - coord[0]) ** 2 + (base[1] - coord[1]) ** 2) > equal_spaced_distance:
-            equal_spaced_points.append(coord)
-            base = coord
+        theta = np.linspace(theta.min(), theta.max(), 10000)
+        r_, _ = m.predict(theta[:, np.newaxis])
+        r_ = r_[:, 0]
+        theta_ = theta
 
-    equal_spaced_points = np.array(equal_spaced_points) * 10  # <-- Scale factor from above
-    equal_spaced_points = equal_spaced_points.T
+        x_spline = r_ * np.cos(theta_) + center_of_mass[1]
+        y_spline = r_ * np.sin(theta_) + center_of_mass[0]
 
-    curve = tck[1][0]
-    curviest_point = np.abs(curve).argmax()
+        # x_spline and y_spline have tons and tons of data points.
+        # We want equally spaced points corresponding to a certain distance along the cochlea
+        # i.e. we want a point ever mm which is not guaranteed by x_spline and y_spline
 
-    if curviest_point < curve.shape[0] // 2:  # curve[0] > curve[-1]:
-        apex = equal_spaced_points[:, -1]
-        percentage = np.linspace(1, 0, len(equal_spaced_points[0, :]))
-    else:
-        apex = equal_spaced_points[:, 0]
-        percentage = np.linspace(0, 1, len(equal_spaced_points[0, :]))
+        # THIS ONLY REMOVES STUFF, DOESNT INTERPOLATE!!!!!!
+        curvature = []
+        for i, coord in enumerate(zip(x_spline, y_spline)):
+            if i == 0:
+                base = coord
+                curvature.append(base)
+            if np.sqrt((base[0] - coord[0]) ** 2 + (base[1] - coord[1]) ** 2) > self.equal_spaced_distance:
+                curvature.append(coord)
+                base = coord
 
-    if not diagnostics:
-        return torch.from_numpy(equal_spaced_points), torch.from_numpy(percentage), torch.from_numpy(apex)
-    else:
-        return equal_spaced_points, x_spline, y_spline, image, tck, u
+        curvature = np.array(curvature) * self.scale_factor # <-- Scale factor from above
+        curvature = curvature.T
+
+        # Figure out the knot with the larget value and which side its closest to. Thats probably the apex
+        # If the curviest point is on the first half of the curve or second half. 1
+        curve = tck[1][0]
+        curviest_point = np.abs(curve).argmax()
+        # curviest_point_a = np.abs(curve[:curve.shape[0]//3:]).argmax()
+        # curviest_point_b = np.abs(curve[2*curve.shape[0]//3::]).argmax()
+        #
+        apex = curvature[:, -1] if curviest_point < curve.shape[0] // 2 else curvature[:, 0]
+        # apex = curvature[:, -1] if curviest_point_b > curviest_point_a else curvature[:, 0]
+
+        # sort curvature so that it ALWAYS GOES base to apex
+        # curvature = curvature[:, ::-1] if curviest_point_b > curviest_point_a else curvature
+        curvature = curvature[:, ::-1] if np.all(apex == curvature[:, -1]) else curvature
+
+        # Calculate the distance from the apex
+        distance = np.zeros(curvature.shape[1])
+        x0, y0 = curvature[:, 0]
+        for i in range(1, curvature.shape[1]):
+            x, y = curvature[:, i]
+            dx = ((x - x0) * self.voxel_dim[0]) ** 2
+            dy = ((y - y0) * self.voxel_dim[1]) ** 2
+            distance[i] = np.sqrt(dx + dy) + distance[i-1]
+            x0, y0 = curvature[:, i]
+
+        return torch.from_numpy(curvature.copy()), torch.from_numpy(distance.copy()), torch.from_numpy(apex.copy())
+
+    def fitEPL(self, path: str, pix2um: float = 3.4616):
+        """
+
+        :param path:
+        :return:
+        """
+
+        # csv = np.genfromtxt(path, delimiter=',', skip_header=1)
+        csv = pandas.read_csv(path)
+
+        x: Tensor = torch.tensor(csv['X'].to_list())
+        y: Tensor = torch.tensor(csv['Y'].to_list())
+        center = torch.cat([x.unsqueeze(0), y.unsqueeze(0)]).mean(dim=1)
+
+        x = x - center[0]
+        y = y - center[1]
+
+        theta = torch.arctan(y/x)
+        r = torch.sqrt(x**2 + y**2)
+
+        loc = torch.abs(theta[0:-2:1] - theta[1:-1:1])
+
+        # if np.abs(loc.max()) > 20 / 180 * np.pi:
+        #     theta[loc.argmax()+1::] += 2*np.pi
+
+        tck, u = splprep([theta.numpy(), r.numpy()])#, w=np.ones(len(r)) / len(r), s=1e-2, k=3)
+        u_new = np.linspace(0, 1, 1000)
+        theta_, r_ = splev(u_new, tck)
+        theta_ = torch.from_numpy(theta_)
+        r_ = torch.from_numpy(r_)
+
+        x_spline = r_ * torch.cos(theta_) + center[0]
+        y_spline = r_ * torch.sin(theta_) + center[1]
+
+        tck, u = splprep([x.numpy(), y.numpy()])#, w=np.ones(len(r)) / len(r), s=1e-2, k=3)
+        u_new = np.linspace(0, 1, 1000)
+        x_, y_ = splev(u_new, tck)
+
+        x_ = torch.from_numpy(x_) + center[0]
+        y_ = torch.from_numpy(y_) + center[1]
+        equal_spaced_distance = 0.0001
+        curvature  = []
+        for i, coord in enumerate(zip(x_, y_)):
+            if i == 0:
+                base = coord
+                curvature .append(base)
+            if np.sqrt((base[0] - coord[0]) ** 2 + (base[1] - coord[1]) ** 2) > equal_spaced_distance:
+                curvature.append(coord)
+                base = coord
+
+        curvature = torch.tensor(curvature).mul(pix2um).T  # <-- mm to px
+        # curvature = curvature.T
+
+        # Assume manual is always base to apex
+        apex = curvature[:, -1]
+
+        # sort curvature so that it ALWAYS GOES base to apex - UNNESSECARY!
+        # curvature = curvature[:, ::-1] if np.all(apex == curvature[:, 0]) else curvature
+
+        total_distance = 0
+        distance = torch.zeros(curvature.shape[1])
+        x0, y0 = curvature[:, 0]
+        # calculate the distance from
+        for i in range(1, curvature.shape[1]):
+            # each pixel is 288.88nm
+            x, y = curvature[:, i]
+            dx = ((x - x0) * self.voxel_dim[0]) ** 2
+            dy = ((y - y0) * self.voxel_dim[1]) ** 2
+            distance[i] = np.sqrt(dx + dy) + distance[i-1]
+            x0, y0 = curvature[:, i]
+
+        return curvature, distance, apex
+
+    def _preprocess(self, image, diagnostic):
+
+        image = skimage.transform.downscale_local_mean(image.numpy(), (10, 10)) > 0
+        image = skimage.morphology.binary_closing(image)
+        image = skimage.morphology.diameter_closing(image, 10)
+
+        if diagnostic:
+            plt.imshow(image)
+            plt.show()
+
+        for i in range(self.erode):
+            image = skimage.morphology.binary_erosion(image)
+        for i in range(self.erode):
+            image = skimage.morphology.binary_dilation(image)
+
+        if diagnostic:
+            plt.imshow(image)
+            plt.show()
+
+        return skimage.morphology.skeletonize(image, method='lee')
+
 
 
 ########################################################################################################################
@@ -468,32 +698,35 @@ def get_cochlear_length(image: torch.Tensor,
 
 class PredictCellCandidates(nn.Module):
     def __init__(self, model: nn.Module, device: str = 'cpu'):
+        """
+        Initializes a Faster RCNN model for detection of cell candidates.
+        These cell candidates are used as seed values for a watershed segmentation algorithm.
+
+        :param model: Initialized faster RCNN model
+        :param device: device used to perform calculations ('cpu' or 'cuda')
+        """
         super(PredictCellCandidates, self).__init__()
         self.model = model.to(device)
         self.device = device
 
-    def forward(self, image: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(self, image: Tensor) -> Dict[str, Tensor]:
         """
-        Takes in an image in torch spec from the dataloader for unet and performs the 2D search for hair cells on each
-        z plane, removes duplicates and spits back a list of hair cell locations, row identities, and probablilities
+        Applies a FasterRCNN model on each z plane of an image. Returns the prediction in a dictionary.
 
-        Steps:
-        process image ->
-        load model ->
-        loop through each slice ->
-        compile list of dicts ->
-        for each dict add a cell candidate to a master list ->
-        if a close cell candidate has a higher probability, replace old candidate with new one ->
-        return lists of master cell candidtates
+        Example:
 
+        >>> from hcat.lib.functional import PredictCellCandidates
+        >>> import torch
+        >>> image = torch.load('image.trch') # [B, C, X, Y, Z] ground truth mask
+        >>> predict = PredictCellCandidates()
+        >>> centroids: Dict[str, Tensor] = predict(image) # keys: 'scores', 'boxes', 'labels'
 
-        :param image:
-        :param model:
-        :return:
+        :param image: [B, C=4, X, Y, Z] input image
+        :return: a dictionary with keys: 'scores', 'boxes', 'labels'.
         """
 
         # Check Inputs
-        if not isinstance(image, torch.Tensor): raise ValueError(f'Image should be torch.tensor {type(image)}')
+        if not isinstance(image, Tensor): raise ValueError(f'Image should be torch.tensor {type(image)}')
         if image.ndim != 5: raise ValueError(f'Image dimmensions should be 5, not {image.ndim}')
         if image.shape[0] != 1: raise ValueError(
             f'Multiple Batches not supported. Image.shape[0] should be 1, not {image.shape[0]}')
@@ -540,7 +773,7 @@ class PredictSemanticMask(nn.Module):
 
         self.unet = model.to(device)
 
-    def forward(self, image: torch.Tensor) -> torch.Tensor:
+    def forward(self, image: Tensor) -> Tensor:
         """
         Uses pretrained unet model to predict semantic segmentation of hair cells.
 
@@ -557,7 +790,7 @@ class PredictSemanticMask(nn.Module):
         BLUR PROBABILITY MAP???
 
         :param unet: Trained Unet Model from hcat.unet
-        :param image: torch.Tensor image with transforms pre applied!!! [1, 4, X, Y, Z]
+        :param image: Tensor image with transforms pre applied!!! [1, 4, X, Y, Z]
         :param device: 'cuda' or 'cpu'
         :param mask_cell_prob_threshold: float between 0 and 1 : min probability of cell used to generate the mask
         :param use_probability_map: bool, if True, does not apply sigmoid function to valid out, returns prob map instead
@@ -566,7 +799,7 @@ class PredictSemanticMask(nn.Module):
         """
 
         # Check Inputs
-        if not isinstance(image, torch.Tensor): raise ValueError(f'Image should be torch.tensor {type(image)}')
+        if not isinstance(image, Tensor): raise ValueError(f'Image should be torch.tensor {type(image)}')
         if image.ndim != 5: raise ValueError(f'Image dimmensions should be 5, not {image.ndim}')
         if image.shape[0] != 1: raise ValueError(
             f'Multiple Batches not supported. Image.shape[0] should be 1, not {image.shape[0]}')
@@ -582,7 +815,7 @@ class PredictSemanticMask(nn.Module):
         # Apply Padding by reflection to all edges of image
         # With pad size of (30, 30, 4)
         # im.shape = [1,4,100,100,10] -> [1, 4, 160, 160, 18]
-        image = utils.pad_image_with_reflections(torch.as_tensor(image), pad_size=PAD_SIZE)
+        image = hcat.lib.utils.pad_image_with_reflections(torch.as_tensor(image), pad_size=PAD_SIZE)
 
         with torch.no_grad():
 
@@ -612,11 +845,11 @@ class GenerateSeedMap(nn.Module):
         self.cell_threshold = cell_prob_threshold
         self.mask_threshold = mask_prob_threshold
 
-    def forward(self, cell_candidates: Dict[str, torch.Tensor], prob_map: torch.Tensor) -> torch.Tensor:
+    def forward(self, cell_candidates: Dict[str, Tensor], prob_map: Tensor) -> Tensor:
         """
 
-        :param cell_candidates: Dict[str, torch.Tensor] keys = ['scores', 'boxes', 'z_plane', 'labels']
-        :param prob_map: [B, C, X, Y, Z] torch.Tensor
+        :param cell_candidates: Dict[str, Tensor] keys = ['scores', 'boxes', 'z_plane', 'labels']
+        :param prob_map: [B, C, X, Y, Z] Tensor
         :return:
         """
 
@@ -747,8 +980,8 @@ class InstanceMaskFromProb(nn.Module):
         self.use_prob_map = use_prob_map
         self.expand_z = expand_z
 
-    def forward(self, semantic_mask: torch.Tensor,
-                seed: torch.Tensor) -> torch.Tensor:
+    def forward(self, semantic_mask: Tensor,
+                seed: Tensor) -> Tensor:
         """
 
         :param semantic_mask:
@@ -777,7 +1010,6 @@ class InstanceMaskFromProb(nn.Module):
         assert mask.shape == seed.shape
         assert base.shape == mask.shape
 
-
         # Run the watershed algorithm
         mask = skimage.segmentation.watershed(image=base.cpu().numpy() * -1,
                                               markers=seed.cpu().numpy(),
@@ -785,13 +1017,12 @@ class InstanceMaskFromProb(nn.Module):
                                               connectivity=1,
                                               watershed_line=True, compactness=0.01)
 
-
         mask = torch.from_numpy(mask)
         mask = self._correct_predicted_instance_mask(mask)
 
         return mask.unsqueeze(0).unsqueeze(0)
 
-    def _prepare_watershed_base(self, semantic_mask: torch.Tensor):
+    def _prepare_watershed_base(self, semantic_mask: Tensor):
         """
         Prepare the base matrix which watershed is run off of. Has two potential methods depending on context.
             1: use distance transform of semantic segmentation mask
@@ -816,15 +1047,15 @@ class InstanceMaskFromProb(nn.Module):
         """
         Accounts for anisotropy by expanding each z plane of a matrix with copies
         example
-        matrix: torch.Tensor = torch.rand([1, 1, 100, 100, 10])
-        matrix: torch.Tensor = _expand_z_dimmension(matrix, expand_z = 4)
+        matrix: Tensor = torch.rand([1, 1, 100, 100, 10])
+        matrix: Tensor = _expand_z_dimmension(matrix, expand_z = 4)
         matrix.shape
             >>> torch.Shape([1, 100, 100, 40])
         torch.all(matrix[0,:,:,1] == matrix[0,:,:,2])
             >>> True
 
 
-        :param matrix: torch.Tensor with 5 dimmensions
+        :param matrix: Tensor with 5 dimmensions
         :param expand_z: integer multiple
         :return:
         """
@@ -835,8 +1066,8 @@ class InstanceMaskFromProb(nn.Module):
                 mat_expanded[:, :, (expand_z * i + j)] = matrix[0, 0, :, :, i]
         return mat_expanded
 
-    def _correct_predicted_instance_mask(self, mask: torch.Tensor) -> torch.Tensor:
-        mask[mask== 1] = 0
+    def _correct_predicted_instance_mask(self, mask: Tensor) -> Tensor:
+        mask[mask == 1] = 0
         mask = mask[..., ::self.expand_z]
         return mask
 
@@ -846,33 +1077,34 @@ class InstanceMaskFromProb(nn.Module):
 ########################################################################################################################
 
 class IntensityCellReject(nn.Module):
-    def __init__(self, threshold: float = 0.07):
+    def __init__(self, threshold: float = 0.08):
         """
         :param threshold: If cell avg val is lower than this, get rid of it...
         """
         super(IntensityCellReject, self).__init__()
         self.threshold = threshold
 
-    def forward(self, mask: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
+    def forward(self, mask: Tensor, image: Tensor) -> Tensor:
         """
         Checks the type of mask: colormask or binary mask.
         :param mask:
         :param image:
         :return:
         """
-        mask, image = utils.crop_to_identical_size(mask, image)
+        mask, image = hcat.lib.utils.crop_to_identical_size(mask, image)
+
+        # strange edge case where
 
         if mask.shape[1] == 1 and mask.max() >= 1:
             return self.color(mask, image)
-        elif mask.shape[1] > 1:
+        elif mask.shape[1] >= 1 and mask.max() < 1:
             return self.binary(mask, image)
         elif mask.shape[1] == 0:
             return torch.empty((0)).gt(0)
         else:
             raise RuntimeError(f'Unknown Mask Shape: {mask.shape}, {mask.max()}')
 
-
-    def color(self, mask: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
+    def color(self, mask: Tensor, image: Tensor) -> Tensor:
         ind = torch.ones(mask.shape[1], dtype=torch.long, device=mask.device)
 
         unique = torch.unique(mask)
@@ -886,7 +1118,7 @@ class IntensityCellReject(nn.Module):
 
         return mask
 
-    def binary(self, mask: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
+    def binary(self, mask: Tensor, image: Tensor) -> Tensor:
         """
         Re
         :param mask: [B, N, X, Y, Z]
@@ -894,7 +1126,7 @@ class IntensityCellReject(nn.Module):
         :return:
         """
 
-        mask, image = utils.crop_to_identical_size(mask, image)
+        mask, image = hcat.lib.utils.crop_to_identical_size(mask, image)
         ind = torch.ones(mask.shape[1], dtype=torch.long, device=mask.device)
 
         for i in range(mask.shape[1]):
@@ -905,10 +1137,11 @@ class IntensityCellReject(nn.Module):
         return mask[:, ind.gt(0), ...]
 
 
-@torch.jit.script
-def merge_regions(destination: torch.Tensor,
-                  data: torch.Tensor,
-                  threshold: float = 0.25) -> Tuple[torch.Tensor, torch.Tensor]:
+# @graceful_exit('\x1b[1;31;40m' + 'ERROR: Could not merge regions.' + '\x1b[0m')
+# @torch.jit.script
+def merge_regions(destination: Tensor,
+                  data: Tensor,
+                  threshold: float = 0.25) -> Tuple[Tensor, Tensor]:
     """
     assume [C, X, Y, Z] shape for all tensors
 

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Optional
 
-from hcat.transforms import crop_to_identical_size
+from hcat.lib.utils import crop_to_identical_size
 
 
 class jaccard(nn.Module):
@@ -15,7 +15,7 @@ class jaccard(nn.Module):
         Returns jaccard index of two torch.Tensors
 
         :param predicted: [B, I, X, Y, Z] torch.Tensor
-                - probabilities calculated from src.utils.embedding_to_probability
+                - probabilities calculated from hcat.utils.embedding_to_probability
                   where B: is batch size, I: instances in image
         :param ground_truth: [B, I, X, Y, Z] torch.Tensor
                 - segmentation mask for each instance (I).
@@ -44,7 +44,7 @@ class dice(nn.Module):
         Returns dice index of two torch.Tensors
 
         :param predicted: [B, I, X, Y, Z] torch.Tensor
-                - probabilities calculated from src.utils.embedding_to_probability
+                - probabilities calculated from hcat.utils.embedding_to_probability
                   where B: is batch size, I: instances in image
         :param ground_truth: [B, I, X, Y, Z] torch.Tensor
                 - segmentation mask for each instance (I).
@@ -70,21 +70,23 @@ class tversky(nn.Module):
         super(tversky, self).__init__()
 
     def forward(self, predicted: torch.Tensor, ground_truth: torch.Tensor, smooth: float = 1e-10,
-                alpha: float = 0.5, beta: float = 0.5) -> torch.Tensor:
+                alpha: float = 0.5, beta: float = 0.5, gamma: float = 0.0, weight: bool = False) -> torch.Tensor:
         """
         Returns dice index of two torch.Tensors
 
-        :param predicted: [B, I, X, Y, Z] torch.Tensor
-                - probabilities calculated from src.utils.embedding_to_probability
-                  where B: is batch size, I: instances in image
-        :param ground_truth: [B, I, X, Y, Z] torch.Tensor
-                - segmentation mask for each instance (I).
+        :param predicted: [B, N, X, Y, Z] torch.Tensor
+                - probabilities calculated from hcat.utils.embedding_to_probability
+                  where B: is batch size, N: instances in image
+        :param ground_truth: [B, N, X, Y, Z] torch.Tensor
+                - segmentation mask for each instance (N).
         :param smooth: float
                 - Very small number to ensure numerical stability. Default 1e-10
         :param alpha: float
                 - Value which penalizes False Positive Values
         :param beta: float
                 - Value which penalizes False Negatives
+        :param gamma: float
+                - Focal loss term
         :return: dice_loss: [1] torch.Tensor
                 - Result of Loss Function Calculation
         """
@@ -92,12 +94,27 @@ class tversky(nn.Module):
         # Crop both tensors to the same shape
         predicted, ground_truth = crop_to_identical_size(predicted, ground_truth)
 
-        true_positive = (predicted * ground_truth).sum()
-        false_positive = (torch.logical_not(ground_truth) * predicted).sum().add(1e-10) * alpha
-        false_negative = ((1 - predicted) * ground_truth).sum() * beta
-        tversky = (true_positive + smooth) / (true_positive + false_positive + false_negative + smooth)
+        if gamma != 0:
+            # true_positive = (predicted * ground_truth).flatten(start_dim=2).sum(-1)
+            # false_positive = (torch.logical_not(ground_truth) * predicted).flatten(start_dim=2).sum(-1).add(1e-10) * alpha
+            # false_negative = ((1 - predicted) * ground_truth).flatten(start_dim=2).sum(-1) * beta
+            # tversky = (true_positive + smooth) / (true_positive + false_positive + false_negative + smooth)
+            # tversky = tversky.add(-1).mul(-1).pow(1 / gamma).mean()
+            true_positive = (predicted * ground_truth).sum()
+            false_positive = (torch.logical_not(ground_truth) * predicted).sum().add(1e-10) * alpha
+            false_negative = ((1 - predicted) * ground_truth).sum() * beta
+            tversky = (true_positive + smooth) / (true_positive + false_positive + false_negative + smooth)
+            tversky = 1 - tversky
+            tversky = tversky.pow(1/gamma)
 
-        return 1 - tversky
+        else:
+            true_positive = (predicted * ground_truth).sum()
+            false_positive = (torch.logical_not(ground_truth) * predicted).sum().add(1e-10) * alpha
+            false_negative = ((1 - predicted) * ground_truth).sum() * beta
+            tversky = (true_positive + smooth) / (true_positive + false_positive + false_negative + smooth)
+            tversky = 1 - tversky
+
+        return tversky
 
 
 class l1(nn.Module):
@@ -109,7 +126,7 @@ class l1(nn.Module):
         Returns mean l1 distance of two torch.Tensors
 
         :param predicted: [B, I, X, Y, Z] torch.Tensor
-                - probabilities calculated from src.utils.embedding_to_probability
+                - probabilities calculated from hcat.utils.embedding_to_probability
                   where B: is batch size, I: instances in image
         :param ground_truth: [B, I, X, Y, Z] torch.Tensor
                 - segmentation mask for each instance (I).
@@ -123,6 +140,19 @@ class l1(nn.Module):
 
         return loss(predicted, ground_truth)
 
+class L1_CE(nn.Module):
+    def __init__(self):
+        super(L1_CE, self).__init__()
+
+        self.l1 = torch.nn.L1Loss()
+        self.cel = nn.BCEWithLogitsLoss(reduction='none')
+
+    def forward(self, predicted, ground_truth) -> torch.Tensor:
+        predicted, ground_truth = crop_to_identical_size(predicted, ground_truth)
+
+        return self.l1(predicted.float(), ground_truth.float()).mean() + self.cel(predicted.float(), ground_truth.float()).mean()
+
+
 
 # class cross_entropy(nn.Module):
 #     def __init__(self):
@@ -131,7 +161,7 @@ class l1(nn.Module):
 #     def forward(self, predicted: torch.Tensor, ground_truth: torch.Tensor) -> torch.Tensor:
 #         """
 #
-#         :param predicted: [B, I, X, Y, Z] torch.Tensor of probabilities calculated from src.utils.embedding_to_probability
+#         :param predicted: [B, I, X, Y, Z] torch.Tensor of probabilities calculated from hcat.utils.embedding_to_probability
 #                           where B: is batch size, I: instances in image
 #         :param ground_truth: [B, I, X, Y, Z] segmentation mask for each instance (I).
 #         :return:

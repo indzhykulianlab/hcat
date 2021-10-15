@@ -1,14 +1,31 @@
 import torch
 from typing import List, Tuple, Optional, Union
-from hcat.explore_lif import Reader
-from hcat.transforms import _crop
+
+import torchvision.transforms.functional
+
+from hcat.lib.explore_lif import Reader
+from hcat.train.transforms import _crop
+
 import numpy as np
 import skimage.io as io
+import os.path
+
 import matplotlib.pyplot as plt
+import xml.etree.ElementTree as ET
 
 
-class ShapeError(Exception):
-    pass
+def graceful_exit(message):
+    """ Decorator which returns a message upon failure"""
+    def decorator(function):
+        def wrapper(*args, **kwargs):
+            result = None
+            try:
+                result = function(*args, **kwargs)
+            except Exception:
+                print(message)
+            return result
+        return wrapper
+    return decorator
 
 
 def calculate_indexes(pad_size: int, eval_image_size: int,
@@ -71,10 +88,10 @@ def crop_to_identical_size(a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tens
     :param b:
     :return:
     """
-    if a.ndim != b.ndim:
-        raise RuntimeError('Number of dimensions of tensor "a" does not equal tensor "b".')
+    # if a.ndim != b.ndim:
+    #     raise RuntimeError('Number of dimensions of tensor "a" does not equal tensor "b".')
 
-    if a.ndim > 5:
+    if a.ndim < 3:
         raise RuntimeError('Only supports tensors with minimum 3dimmensions and shape [..., X, Y, Z]')
 
     a = _crop(a, x=0, y=0, z=0, w=b.shape[-3], h=b.shape[-2], d=b.shape[-1])
@@ -85,10 +102,14 @@ def crop_to_identical_size(a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tens
 # #                                                       Postprocessing
 # ########################################################################################################################
 
+# @graceful_exit('\x1b[1;31;40m' + 'ERROR: Could not remove edge cells.' + '\x1b[0m')
 @torch.jit.script
 def remove_edge_cells(mask: torch.Tensor) -> torch.Tensor:
     """
     Removes cells touching the border
+
+    .. warning:
+       Will not raise an error upon failure, instead returns None and prints to standard out
 
     :param mask: (B, X, Y, Z)
     :return: mask (B, X, Y, Z)
@@ -115,10 +136,14 @@ def remove_edge_cells(mask: torch.Tensor) -> torch.Tensor:
     return mask
 
 
+# @graceful_exit('\x1b[1;31;40m' + 'ERROR: Could not remove improperly sized cells.' + '\x1b[0m')
 @torch.jit.script
 def remove_wrong_sized_cells(mask: torch.Tensor) -> torch.Tensor:
     """
     Removes cells with outlandish volumes. These have to be wrong.
+
+    .. warning:
+       Will not raise an error upon failure, instead returns None and prints to standard out
 
     :param mask: [B, C=1, X, Y, Z] int torch.Tensor: cell segmentation mask where each cell has a unique cell id
     :return:
@@ -137,6 +162,7 @@ def remove_wrong_sized_cells(mask: torch.Tensor) -> torch.Tensor:
 # ########################################################################################################################
 # #                                                       U Net Specific
 # ########################################################################################################################
+
 
 def pad_image_with_reflections(image: torch.Tensor, pad_size: Tuple[int] = (30, 30, 6)) -> torch.Tensor:
     """
@@ -189,7 +215,7 @@ def pad_image_with_reflections(image: torch.Tensor, pad_size: Tuple[int] = (30, 
 ########################################################################################################################
 
 
-def load(file: str, header_name: Optional[str] = 'TileScan 1 Merged',
+def load(file: str,  header_name: Optional[str] = 'TileScan 1 Merged',
          verbose: bool = False) -> Union[None, np.array]:
     """
     Loads image file (*leica or *tif) and returns an np.array
@@ -202,24 +228,28 @@ def load(file: str, header_name: Optional[str] = 'TileScan 1 Merged',
 
     image_base = None
 
+
+    if verbose:
+        print(f'Loading: {file}...')
+
+    if not os.path.exists(file):
+        print(f'\n\x1b[1;31;40m' + f'Cannot access: \'{file}\'. No such file.' + '\x1b[0m')
+        return None
+
     if file.endswith('.lif'):  # Load lif file
         reader = Reader(file)
         series = reader.getSeries()
         for i, header in enumerate(reader.getSeriesHeaders()):
             if header.getName() == header_name:  ###'TileScan 1 Merged':
 
-                if verbose:
-                    print(f'Loading {file}...')
 
                 chosen = series[i]
                 for c in range(4):
                     if c == 0:
                         image_base = chosen.getXYZ(T=0, channel=c)[np.newaxis]
 
-                        if verbose:
-                            print(f'Estimated Image Numel: {image_base.size * 4}')
-
                         if image_base.size * 4 > 9000 * 9000 * 40 * 4:
+                            print(f'\x1b[1;33;40m' + f'WARNING: \'{file}\' has image size of {image_base.shape} and is very large. Analysis may fail.' + '\x1b[0m')
                             return None
 
                     else:
@@ -227,23 +257,121 @@ def load(file: str, header_name: Optional[str] = 'TileScan 1 Merged',
                 del series, header, chosen
 
     elif file.endswith('.tif'): # Load a tif
-        if verbose:
-            print(f'Loading {file}...')
-
         image_base = io.imread(file)
 
         if image_base.ndim == 4:
             image_base = image_base.transpose((-1, 1, 2, 0))
 
-        elif image_base.ndim == 3:  # Suppose you load a 3D image with one channel.
+        elif image_base.ndim == 3 and np.array(image_base.shape).min() > 4:  # Suppose you load a 3D image with one channel.
             image_base = image_base[np.newaxis, ...]
             image_base = np.concatenate((image_base, image_base, image_base, image_base), axis=0).transpose(0, 2, 3, 1)
+        elif image_base.ndim == 3 and image_base.shape[-1] <= 4:  # Suppose you load a 2D image! with multiple channels
+            image_base = image_base[..., [2, 3]].transpose((2, 0, 1)) # always just take the last two channels
+            # just return it...
+            pass
+        elif image_base.ndim == 3 and image_base.shape[0] <= 4:  # Suppose you load a 2D image! with multiple channels
+            pass
         else:
-            raise RuntimeError(f'Image ndim not 3 or 4, {image_base.ndim}, {image_base.shape}')
+            print(f'\x1b[1;31;40m' + f'Cannot load: \'{file}\'. Unsupported number of dimmensions: {image_base.ndim}' + '\x1b[0m')
+            return None
+
     else:
-        raise NotImplementedError(f'Cannot Load file of with this extension: {file}')
+        print(f'\x1b[1;31;40m' + f'Cannot load: \'{file}\'. Filetype not supported.' + '\x1b[0m')
+        return None
 
     return image_base
+
+
+def correct_pixel_size(image: torch.Tensor, pixel_size: float = 288.88, antialias: Optional[bool] = True):
+    """
+    Correct an image to have a pixel width of 288.88
+
+    :param image:
+    :param pixel_size:
+    :param alias:
+    :return:
+    """
+
+    if pixel_size is None:
+        pixel_size = 288.88
+
+    scale = pixel_size / 288.88
+    c, x, y = image.shape
+    new_size = [round(x * scale), round(y * scale)]
+    if image.min() < 0:
+        image = image.div(0.5).add(0.5)
+        return torchvision.transforms.functional.resize(image, new_size, antialias=antialias).mul(0.5).add(0.5)
+    else:
+        return torchvision.transforms.functional.resize(image, new_size, antialias=antialias)
+
+
+def scale_to_hair_cell_diameter(image: torch.Tensor, cell_diameter: int, antialias: Optional[bool] = True) -> torch.Tensor:
+
+    scale = 30 / cell_diameter
+    c, x, y = image.shape
+    new_size = [round(x * scale), round(y * scale)]
+    if image.min() < 0:
+        image = image.div(0.5).add(0.5)
+        return torchvision.transforms.functional.resize(image, new_size, antialias=antialias).mul(0.5).add(0.5)
+    else:
+        return torchvision.transforms.functional.resize(image, new_size, antialias=antialias)
+
+
+def get_dtype_offset(dtype: str = 'uint16') -> int:
+    """ get dtype from string """
+    if dtype == 'uint16':
+        scale = 2 ** 16
+    elif dtype == 'uint8':
+        scale = 2 ** 8
+    elif dtype == 'uint12':  # FM143 usually is this...
+        scale = 2 ** 12
+    else:
+        print(f'\x1b[1;31;40m' + f'ERROR: Unsupported dtype: {dtype}. Currently support: (uint8, uint12, uint16)' + '\x1b[0m')
+        scale = None
+    return scale
+
+
+def cochlea_to_xml(cochlea) -> None:
+    # Xml header and root
+    filename = cochlea.filename
+    path = cochlea.path # has filename appended to end
+    folder = os.path.split(filename)[0]
+    folder = os.path.split(folder)[-1] if len(folder) != 0 else os.path.split(os.getcwd())[1]
+
+    _, height, width= cochlea.im_shape
+    depth = 1
+
+
+    root = ET.Element('annotation')
+    ET.SubElement(root, 'folder').text = folder
+    ET.SubElement(root, 'filename').text = filename
+    ET.SubElement(root, 'path').text = path
+    source = ET.SubElement(root, 'source')
+    ET.SubElement(source, 'database').text = 'unknown'
+    size = ET.SubElement(root, 'size')
+    ET.SubElement(size, 'width').text = str(width)
+    ET.SubElement(size, 'height').text = str(height)
+    ET.SubElement(size, 'depth').text = str(depth)
+    ET.SubElement(root, 'segmented').text = '0'
+
+
+    for c in cochlea.cells:
+        x0, y0, x1, y1 = c.boxes
+        #  xml write xmin, xmax, ymin, ymax
+        object = ET.SubElement(root, 'object')
+        ET.SubElement(object, 'name').text = c.type
+        ET.SubElement(object, 'pose').text = 'Unspecified'
+        ET.SubElement(object, 'truncated').text = '0'
+        ET.SubElement(object, 'difficult').text = '0'
+        bndbox = ET.SubElement(object, 'bndbox')
+        ET.SubElement(bndbox, 'xmin').text = str(int(x0))
+        ET.SubElement(bndbox, 'ymin').text = str(int(y0))
+        ET.SubElement(bndbox, 'xmax').text = str(int(x1))
+        ET.SubElement(bndbox, 'ymax').text = str(int(y1))
+
+    tree = ET.ElementTree(root)
+    filename = os.path.splitext(cochlea.path)[0]
+    tree.write(filename + '.xml')
 
 
 ########################################################################################################################
@@ -259,3 +387,7 @@ def plot_embedding(embedding: torch.Tensor, centroids: torch.Tensor) -> None:
     plt.plot(centroids[0, :, 1].cpu().numpy(), centroids[0, :, 0].cpu().numpy(), 'ro')
 
     plt.show()
+
+if __name__ == "__main__":
+    cochlea = torch.load('test.cochlea')
+    cochlea_to_xml(cochlea)
