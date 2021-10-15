@@ -319,17 +319,16 @@ def FasterRCNN_from_url(url: str, device: str, model: FasterRCNN = HairCellFaste
     """ loads model from url """
     path = os.path.join(hcat.__path__[0], 'Max_project_detection_resnet.trch')
 
-    if not os.path.exists(path) and _is_url(url):
+    if not os.path.exists(path):
         print('Downloading Model File: ')
         wget.download(url=url, out=path)
         print(' ')
-    else:
-        raise ValueError(f'Url is not valid: {url}')
+
 
     model = model.requires_grad_(False)
     checkpoint = torch.load(path, map_location=torch.device('cpu'))
     model = model.to(device)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    model.load_state_dict(checkpoint)
 
     for m in model.modules():
         if isinstance(m, nn.BatchNorm3d):

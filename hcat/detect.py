@@ -41,6 +41,15 @@ def _detect(f: str, curve_path: str = None, cell_detection_threshold: float = 0.
 
     with torch.no_grad():
 
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if device == 'cuda':
+            print('\x1b[1;32;40mCUDA: GPU successfully initialized!\x1b[0m')
+        else:
+            print('\x1b[1;33;40m'
+                  'WARNING: GPU not present or CUDA is not correctly intialized for GPU accelerated computation. '
+                  'Analysis may be slow.'
+                  '\x1b[0m')
+
         # Load and preprocess Image
         image_base = load(f, 'TileScan 1 Merged', verbose=True)  # from hcat.lib.utils
         image_base = image_base[[2, 3],...].max(-1) if image_base.ndim == 4 else image_base
@@ -50,7 +59,7 @@ def _detect(f: str, curve_path: str = None, cell_detection_threshold: float = 0.
 
         dtype = image_base.dtype if dtype is None else dtype
         scale: int = hcat.lib.utils.get_dtype_offset(dtype)
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 
         temp = np.zeros(shape)
         temp = np.concatenate((temp, image_base)) / scale * 255
@@ -83,13 +92,6 @@ def _detect(f: str, curve_path: str = None, cell_detection_threshold: float = 0.
         image_base.sub_(0.5).div_(0.5)
 
 
-        if device == 'cuda':
-            print('\x1b[1;32;40mCUDA: GPU successfully initialized!\x1b[0m')
-        else:
-            print('\x1b[1;33;40m'
-                  'WARNING: GPU not present or CUDA is not correctly intialized for GPU accelerated computation. '
-                  'Analysis may be slow.'
-                  '\x1b[0m')
 
         # Initalize the model...
         model = FasterRCNN_from_url(url='https://github.com/buswinka/hcat/blob/master/modelfiles/detection.trch?raw=true', device=device)
