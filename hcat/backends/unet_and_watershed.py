@@ -36,7 +36,7 @@ class UNetWatershed(nn.Module):
 
         self.instance_mask_from_prob = hcat.lib.functional.InstanceMaskFromProb()
 
-    @graceful_exit('\x1b[1;31;40m' + 'ERROR: Unet+Watershed Failed. Aborting...' + '\x1b[0m')
+    # @graceful_exit('\x1b[1;31;40m' + 'ERROR: Unet+Watershed Failed. Aborting...' + '\x1b[0m')
     def forward(self, image: torch.Tensor, channel: Optional[int] = 2) -> torch.Tensor:
         """
         Inputs an image and outputs a probability mask of everything seen in the image.
