@@ -1,4 +1,4 @@
-# HCAT - Hair Cell Analysis Tools
+# HCAT - Hair Cell Analysis Toolbox
 
 Hcat is a suite of machine learning enabled algorithms for performing common image analyses in the hearing field.
 At present, it performs two fully automated analyses: (1) Volumetric hair cell segmentation and (2) 2D hair cell detection. 
