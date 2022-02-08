@@ -1,7 +1,11 @@
+import warnings
+
 import skimage.scripts.skivi
+import matplotlib.pyplot as plt
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
+import torchvision.transforms.functional as TF
 import numpy as np
 import glob
 import os.path
@@ -11,12 +15,15 @@ import skimage.io as io
 from typing import Dict, List, Union
 from skimage.morphology import ball
 import xml
+from torch.utils.data import Dataset
+import src.lib.utils
+from typing import Callable
 
-import hcat.train.transforms as t
+import src.train.transforms as t
 
 
 class dataset(DataLoader):
-    def __init__(self, path, transforms=None, random_ind: bool = False, min_cell_volume: int = 4000,
+    def __init__(self, path: Union[List[str], str], transforms=None, random_ind: bool = False, min_cell_volume: int = 4000,
                  duplicate_poor_data: bool = False):
         super(DataLoader, self).__init__()
 
@@ -31,32 +38,36 @@ class dataset(DataLoader):
         self.transforms = transforms
         self.dpd = duplicate_poor_data
 
+        path: List[str] = [path] if isinstance(path, str) else path
+        print('WARNING: Memory PINNED!!!')
+
         # Find only files
-        self.files = glob.glob(os.path.join(path, '*.labels.tif'))
-        for f in self.files:
-            image_path = os.path.splitext(f)[0]
-            image_path = os.path.splitext(image_path)[0] + '.tif'
+        for p in path:
+            self.files = glob.glob(os.path.join(p, '*.labels.tif'))
+            for f in self.files:
+                image_path = os.path.splitext(f)[0]
+                image_path = os.path.splitext(image_path)[0] + '.tif'
 
-            if image_path.find(
-                    '-DUPLICATE') > 0 and not self.dpd:  # If -DUPLICATE flag is there and we want extra copies continue
-                continue
+                if image_path.find(
+                        '-DUPLICATE') > 0 and not self.dpd:  # If -DUPLICATE flag is there and we want extra copies continue
+                    continue
 
-            image = torch.from_numpy(io.imread(image_path).astype(np.uint16) / 2 ** 16).unsqueeze(0)
-            image = image.transpose(1, 3).transpose(0, -1).squeeze()[[0, 2, 3], ...]
+                image = torch.from_numpy(io.imread(image_path).astype(np.uint16) / 2 ** 16).unsqueeze(0)
+                image = image.transpose(1, 3).transpose(0, -1).squeeze()[[0, 2, 3], ...]
 
-            mask = torch.from_numpy(io.imread(f)).transpose(0, 2).unsqueeze(0)
+                mask = torch.from_numpy(io.imread(f)).transpose(0, 2).unsqueeze(0)
 
-            self.mask.append(mask.float())
-            self.image.append(image.float())
-            self.centroids.append(torch.tensor([0, 0, 0]))
+                self.mask.append(mask.float())
+                self.image.append(image.float())
+                self.centroids.append(torch.tensor([0, 0, 0]))
 
-        # implement random permutations of the indexing
-        self.random_ind = random_ind
+            # implement random permutations of the indexing
+            self.random_ind = random_ind
 
-        if self.random_ind:
-            self.index = torch.randperm(len(self.mask))
-        else:
-            self.index = torch.arange((len(self.mask)))
+            if self.random_ind:
+                self.index = torch.randperm(len(self.mask))
+            else:
+                self.index = torch.arange((len(self.mask)))
 
     def __len__(self) -> int:
         return len(self.mask)
@@ -262,13 +273,15 @@ class synthetic:
         pass
 
 
-class detection_dataset(DataLoader):
-    def __init__(self, path, transforms=None, random_ind: bool = False, min_cell_volume: int = 20*10,
-                 duplicate_poor_data: bool = False, simple_class: bool = True, batch_size: int = 1):
-        super(DataLoader, self).__init__()
+class detection_dataset(Dataset):
+    def __init__(self, path: Union[List[str], str], transforms, random_ind: bool = False, min_cell_volume: int = 20*10,
+                 duplicate_poor_data: bool = False, simple_class: bool = True, batch_size: int = 1, pad_size: int = 200):
+        super(Dataset, self).__init__()
 
         # Functions to correct for Bad Masks
         self.transformation_correction = t.transformation_correction(min_cell_volume)  # removes bad masks
+
+        if transforms is None: raise RuntimeError('Transformations Necessary for data loading.')
 
         # Reassigning variables
         self.mask = []
@@ -276,28 +289,42 @@ class detection_dataset(DataLoader):
         self.centroids = []
         self.boxes = []
         self.labels = []
+        self.files = []
         self.transforms = transforms
         self.dpd = duplicate_poor_data
+        self.simple_class = simple_class
+        self.pad_size = pad_size
+
+        self.device = 'cuda:0'
+
+        path: List[str] = [path] if isinstance(path, str) else path
 
         # Find only files
-        self.simple_class = simple_class
-        self.files = glob.glob(f'{path}{os.sep}*.xml')
+        for p in path:
+            self.files.extend(glob.glob(f'{p}{os.sep}*.xml'))
 
+        print('WARNING: Image hacks in src.train.dataloader.detection_dataset')
         for f in self.files:
             image_path = f[:-4:]+ '.tif'
-            # print(image_path, '\n', f)
-            # image_path = f
 
             if image_path.find(
                     '-DUPLICATE') > 0 and not self.dpd:  # If -DUPLICATE flag is there and we want extra copies continue
                 continue
 
             # [c, X, Y] -> [c, x, y, z=1]
-            image = torch.from_numpy(io.imread(image_path).astype(np.uint16) / 2 ** 16).unsqueeze(-1)
+            image: np.array = io.imread(image_path)
+            scale: int = src.lib.utils.get_dtype_offset(image.dtype)
+            image: Tensor = TF.pad(torch.from_numpy(image / scale), self.pad_size).unsqueeze(-1)
+
+            if image.max() < 0.2:
+                image = image.div(image.max()).mul(0.8)
+            if image[1, ...].max() < 0.3:
+                image[1, ...] = image[1, ...].mul(2)
+
             mask = torch.empty((0,0,0,0))
 
-            self.mask.append(mask.float())
-            self.image.append(image.float())
+            self.mask.append(mask)
+            self.image.append(image.float().to(self.device, memory_format=torch.channels_last))
             self.centroids.append(torch.tensor([0, 0, 0]))
 
             tree = xml.etree.ElementTree.parse(f)
@@ -340,8 +367,10 @@ class detection_dataset(DataLoader):
                 class_labels[class_labels == 3] = 1  # OHC3 -> OHC
                 class_labels[class_labels == 4] = 2  # IHC
 
-            self.boxes.append(torch.tensor(bbox_loc))
-            self.labels.append(class_labels)
+            self.boxes.append(torch.tensor(bbox_loc).to(self.device) + self.pad_size)
+            self.labels.append(class_labels.to(self.device))
+
+        print(f'TOTAL DATASET SIZE: {len(self.files)}')
 
         # implement random permutations of the indexing
         self.random_ind = random_ind
@@ -357,11 +386,8 @@ class detection_dataset(DataLoader):
         :param dataset_len:
         :return:
         """
-        if dataset_len % batch_size >= batch_size//2:
-            end = dataset_len + dataset_len % batch_size
-        else:
-            end = dataset_len + batch_size - (dataset_len % batch_size)
 
+        end = dataset_len + batch_size - (dataset_len % batch_size)
         base_ind: Tensor = torch.arange(0, end) # should make evenly
 
         if not base_ind.shape[0] % batch_size == 0:
@@ -385,103 +411,35 @@ class detection_dataset(DataLoader):
 
         return indicies
 
-
     def __len__(self) -> int:
         return len(self.index)
 
     def __getitem__(self, item: int) -> Union[Dict[str, torch.Tensor], Dict[str, Union[List[torch.Tensor], torch.Tensor]]]:
 
-        if self.batch_size == 1:
-            with torch.no_grad():
-                item: List[List[int]] = self.index[item]
-                item = item[0] # cuz new function
+        out = []
 
-                did_we_get_an_output = False
-                i = 0
-                while not did_we_get_an_output:
-                    if self.transforms is not None:
-                        data_dict = {'image': self.image[item],
-                                     'masks': self.mask[item],
-                                     'centroids': self.centroids[item],
-                                     'boxes': self.boxes[item],
-                                     'labels': self.labels[item]}
+        with torch.no_grad():
+            item_list: List[int] = self.index[item]
 
-                        # Transformation pipeline
-                        data_dict = t.box_to_mask()(data_dict)                 # For geometric transforms
-                        data_dict = self.transforms(data_dict)                 # Apply transforms
-                        data_dict = self.transformation_correction(data_dict)  # removes bad masks/boxes
-                        data_dict = t.mask_to_box()(data_dict)
+            for index, item in enumerate(item_list):
+                data_dict = {'image': self.image[item],
+                             'masks': self.mask[item],
+                             'centroids': self.centroids[item],
+                             'boxes': self.boxes[item],
+                             'labels': self.labels[item]}
 
-
-                        # may not be boxes remaining, try again if...
-                        if data_dict['boxes'].shape[0] > 0:
-                            did_we_get_an_output = True
-                        else:
-                            i += 1
-                            data_dict['masks'] = None
-                    if i > 10:
-                        print('MOVING')
-                        shutil.move(self.files[item],'/home/chris/Desktop/')
-                        """ Sometimes gets stuck in infinite loop - RARE """
-                        raise ValueError
-
-                    # some transforms throw an error if random things get bad. Most shouldn't. Just ignore and try again.
-
-
-
-            data_dict['boxes'] = torch.round(data_dict['boxes'].float())
-            c, x, y, z = data_dict['image'].shape
-            data_dict['image'] = torch.cat((torch.zeros((1, x, y, z), device=data_dict['image'].device),
-                                            data_dict['image']), dim=0)
-            data_dict['image'] = data_dict['image'][:, :, :, 0]
-            data_dict.pop('masks', None)
-            return data_dict
-
-        else:  # if batch size > 1
-            out = []
-
-            with torch.no_grad():
-                item_list: List[List[int]] = self.index[item]
-
-                for item in item_list:
-                    did_we_get_an_output = False
-                    i = 0
-                    while not did_we_get_an_output:
-                        if self.transforms is not None:
-                            data_dict = {'image': self.image[item],
-                                         'masks': self.mask[item],
-                                         'centroids': self.centroids[item],
-                                         'boxes': self.boxes[item],
-                                         'labels': self.labels[item]}
-
-                            # Transformation pipeline
-                            data_dict = t.box_to_mask()(data_dict)                 # For geometric transforms
-                            data_dict = self.transforms(data_dict)                 # Apply transforms
-                            data_dict = self.transformation_correction(data_dict)  # removes bad masks/boxes
-                            data_dict = t.mask_to_box()(data_dict)
-
-
-                            # may not be boxes remaining, try again if...
-                            if data_dict['boxes'].shape[0] > 0:
-                                did_we_get_an_output = True
-                            else:
-                                i += 1
-                                data_dict['masks'] = None
-                        if i > 10:
-                            print('MOVING')
-                            shutil.move(self.files[item],'/home/chris/Desktop/')
-                            """ Sometimes gets stuck in infinite loop - RARE """
-                            raise ValueError
-
-                        # some transforms throw an error if random things get bad. Most shouldn't. Just ignore and try again.
-
+                # Transformation pipeline
+                data_dict = self.transforms(data_dict) # Apply transforms
 
                 data_dict['boxes'] = torch.round(data_dict['boxes'].float())
                 c, x, y, z = data_dict['image'].shape
                 data_dict['image'] = torch.cat((torch.zeros((1, x, y, z), device=data_dict['image'].device),
-                                                data_dict['image']), dim=0)
-                data_dict['image'] = data_dict['image'][:, :, :, 0]
-                data_dict.pop('masks', None)
+                                                data_dict['image']), dim=0)[:, :, :, 0]
+                data_dict.pop('masks', torch.tensor([]))
+
+                for key in data_dict:
+                    data_dict[key].detach()
+
                 out.append(data_dict)
 
             return out  # List[Dict[str, Tensor]]
@@ -489,6 +447,8 @@ class detection_dataset(DataLoader):
     def step(self) -> None:
         if self.random_ind:
             self.index = self._batch_ind(batch_size=self.batch_size, dataset_len=len(self.image), random_ind=self.random_ind)
+        else:
+            warnings.warn('Stepping when random_ind is set to false has no effect.')
 
 
 @torch.jit.script
@@ -530,10 +490,3 @@ def colormask_to_centroids(colormask: torch.Tensor) -> torch.Tensor:
     # centroid[:, 2] /= colormask.shape[3]
 
     return centroid
-
-
-if __name__ == "__main__":
-    data = synthetic()
-
-    out = data[1]
-    print(out['centroids'].shape)

@@ -1,5 +1,6 @@
 import torch
-from typing import List, Tuple, Optional, Union
+from torch import Tensor
+from typing import List, Tuple, Optional, Union, Dict
 
 import torchvision.transforms.functional
 
@@ -213,6 +214,26 @@ def pad_image_with_reflections(image: torch.Tensor, pad_size: Tuple[int] = (30, 
 ########################################################################################################################
 #                                                         Generics
 ########################################################################################################################
+
+def prep_dict(data_dict, device: str):
+    if isinstance(data_dict, dict):
+        images = data_dict['image'].to(device).float()
+        data_dict['boxes'] = data_dict['boxes']
+        data_dict['labels'] = data_dict['labels']
+        data_dict = [data_dict]
+    elif isinstance(data_dict, list):
+        images = []
+        for dd in data_dict:
+            images.append(dd['image'].to(device).float().squeeze(0))
+        for i in range(len(data_dict)):
+            data_dict[i]['boxes'] = data_dict[i]['boxes']
+            data_dict[i]['labels'] = data_dict[i]['labels']
+    else:
+        raise RuntimeError('data_dict is neither list nor dict')
+
+    return images, data_dict
+
+
 def warn(message: str, color: str) -> None:
     c = {'green' : '\x1b[1;32;40m',
          'yellow': '\x1b[1;33;40m',
@@ -220,6 +241,18 @@ def warn(message: str, color: str) -> None:
          'norm'  : '\x1b[0m'}  # green, yellow, red, normal
 
     print(c[color] + message + c['norm'])
+
+
+def get_device(verbose: Optional[bool] = False) -> str:
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    if device == 'cuda':
+        warn('CUDA: GPU successfully initialized!', color='green')
+    else:
+        warn('WARNING: GPU not present or CUDA is not correctly intialized for GPU accelerated computation. '
+              'Analysis may be slow.', color='yellow')
+
+    return device
 
 def load(file: str,  header_name: Optional[str] = 'TileScan 1 Merged',
          verbose: bool = False) -> Union[None, np.array]:
@@ -247,7 +280,6 @@ def load(file: str,  header_name: Optional[str] = 'TileScan 1 Merged',
         series = reader.getSeries()
         for i, header in enumerate(reader.getSeriesHeaders()):
             if header.getName() == header_name:  ###'TileScan 1 Merged':
-
 
                 chosen = series[i]
                 for c in range(4):
@@ -288,39 +320,48 @@ def load(file: str,  header_name: Optional[str] = 'TileScan 1 Merged',
     return image_base
 
 
-def correct_pixel_size(image: torch.Tensor, pixel_size: float = 288.88, antialias: Optional[bool] = True):
+def correct_pixel_size(image: torch.Tensor,
+                       current_pixel_size: Optional[float] = None,
+                       cell_diameter: Optional[int] = None,
+                       antialias: Optional[bool] = True,
+                       verbose: Optional[bool] = False):
     """
-    Correct an image to have a pixel width of 288.88
+    Correct an image to new pixel size...
 
     :param image:
-    :param pixel_size:
-    :param alias:
+    :param cell_diameter:
+    :param current_pixel_size:
+    :param antialias:
+    :param verbose:
     :return:
     """
+    if cell_diameter is None and current_pixel_size is None:
+        if verbose:
+            print(f'Image was not scaled. Assuming pixel size of 28.88nm X/Y')
+        return image
 
-    if pixel_size is None:
+    if current_pixel_size is not None:
         pixel_size = 288.88
 
-    scale = pixel_size / 288.88
-    c, x, y = image.shape
-    new_size = [round(x * scale), round(y * scale)]
+        scale = pixel_size / 288.88
+        c, x, y = image.shape
+        new_size = [round(x * scale), round(y * scale)]
+
+    elif cell_diameter is not None:
+        scale = 30 / cell_diameter
+        c, x, y = image.shape
+        new_size = [round(x * scale), round(y * scale)]
+
     if image.min() < 0:
         image = image.div(0.5).add(0.5)
-        return torchvision.transforms.functional.resize(image, new_size, antialias=antialias).mul(0.5).add(0.5)
+        image = torchvision.transforms.functional.resize(image, new_size, antialias=antialias).mul(0.5).add(0.5)
     else:
-        return torchvision.transforms.functional.resize(image, new_size, antialias=antialias)
+        image = torchvision.transforms.functional.resize(image, new_size, antialias=antialias)
 
+    if verbose:
+        print(f'Rescaled Image to match pixel size of 288.88nm with a new shape of: {image.shape}')
 
-def scale_to_hair_cell_diameter(image: torch.Tensor, cell_diameter: int, antialias: Optional[bool] = True) -> torch.Tensor:
-
-    scale = 30 / cell_diameter
-    c, x, y = image.shape
-    new_size = [round(x * scale), round(y * scale)]
-    if image.min() < 0:
-        image = image.div(0.5).add(0.5)
-        return torchvision.transforms.functional.resize(image, new_size, antialias=antialias).mul(0.5).add(0.5)
-    else:
-        return torchvision.transforms.functional.resize(image, new_size, antialias=antialias)
+    return image
 
 
 def get_dtype_offset(dtype: str = 'uint16') -> int:
@@ -377,7 +418,7 @@ def cochlea_to_xml(cochlea) -> None:
 
     tree = ET.ElementTree(root)
     filename = os.path.splitext(cochlea.path)[0]
-    tree.write(filename + '.xml')
+    tree.write(filename + '_predicted.xml')
 
 
 ########################################################################################################################

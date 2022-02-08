@@ -3,6 +3,7 @@ from torchvision.ops.boxes import box_convert
 from typing import Tuple, Dict, Optional
 from hcat.train.transforms import _crop
 
+
 # DOCUMENTED
 
 @torch.jit.script
@@ -68,21 +69,20 @@ class Cell:
         self.loc = loc.cpu()  # [C, X, Y, Z]
         self.frequency = None  # Set by self.calculate_frequency
         self.percent_loc = None  # Set by self.calculate_frequency
-        self.type = cell_type # 'OHC' or 'IHC'
+        self.type = cell_type  # 'OHC' or 'IHC'
         self.channel_names = channel_name
         self.volume = None
         self.summed = None
         self.distance = None
-        self.boxes = box_convert(torch.tensor([self.loc[1], self.loc[2], 30, 30]), 'cxcywh', 'xyxy') if boxes is None else boxes
+        self.boxes = box_convert(torch.tensor([self.loc[1], self.loc[2], 30, 30]), 'cxcywh',
+                                 'xyxy') if boxes is None else boxes
 
-
-        self.scores = scores # only for faster rcnn
+        self.scores = scores  # only for faster rcnn
         self.channel_stats = None
 
         self._curve_ind = None
         self._distance_from_curvature = None
         self._distance_is_far_away = False
-
 
         if mask is not None and image is not None:
             # Ensure image is in [B, C, X, Y, Z]
@@ -95,21 +95,19 @@ class Cell:
 
             self.volume = mask.gt(0.5).sum().cpu()
 
-
             mask = mask[0, 0, ...].gt(0.5).cpu()
 
             # 0:DAPI
             # 1:GFP
             # 2:MYO7a
             # 3:Actin
-            self.summed = image[0,0,...][mask].mul(2**12).sum(-1).mean()
+            self.summed = image[0, 0, ...][mask].mul(2 ** 12).sum(-1).mean()
             image = image.squeeze(0).reshape(image.shape[1], -1)[:, mask.flatten()].cpu()
 
             self.channel_stats = {}
 
             for i in range(image.shape[0]):
                 self.channel_stats[channel_name[i]] = _stat(image, i)
-
 
     def calculate_frequency(self, curvature: torch.Tensor, distance: torch.Tensor) -> None:
         """
@@ -133,7 +131,7 @@ class Cell:
         Example:
         --------
 
-        >>> hcat.lib.cell import Cell
+        >>> from hcat.lib.cell import Cell
         >>> from hcat.lib.functional import PredictCurvature
         >>> import torch
         >>>
@@ -144,8 +142,8 @@ class Cell:
         >>>     c.calculate_frequency(curvature, distance)
         >>> print(f'Best Frequency: {cells[0].frequency}, Hz') # Best Frequency: 1.512 kHz
 
-        :param curvature: 2D curvature array from src.lib.functional.PredictCurvature
-        :param distance: distance tensor from src.lib.functional.PredictCurvature
+        :param curvature: 2D curvature array from hcat.lib.functional.PredictCurvature
+        :param distance: distance tensor from hcat.lib.functional.PredictCurvature
         :return: None
         """
         # confocal voxel size: 288.88 nm...
@@ -155,11 +153,12 @@ class Cell:
         self._curve_ind = torch.argmin(dist)
         self._distance_from_curvature = torch.sqrt(dist[self._curve_ind])
         self._distance_is_far_away = self._distance_from_curvature > 100
-        self.distance = distance[self._curve_ind]
+        try:
+            self.distance = distance[self._curve_ind]
+        except:
+            print(len(distance), self._curve_ind)
         self.percent_loc = distance[self._curve_ind].div(distance.max())
-        self.frequency = (10 **((1-self.percent_loc)*0.92) - 0.680) * 9.8
-
-
+        self.frequency = (10 ** ((1 - self.percent_loc) * 0.92) - 0.680) * 9.8
 
 
 if __name__ == '__main__':

@@ -45,7 +45,7 @@ class transform:
 
         for key in x:
             if not isinstance(x[key], torch.Tensor):
-                raise ValueError(f'Value for key: {key} in input dictionary is not of type torch.Tensor, found type: {type(x[key])}')
+                raise ValueError(f'Value for key - {key} in input dictionary is not of type torch.Tensor, found type: {type(x[key])}')
 
         if 'image' not in x: raise KeyError('key "image" not found in input dictionary.')
         if 'masks' not in x: raise KeyError('key "masks" not found in input dictionary.')
@@ -297,18 +297,20 @@ class debug:
     def __call__(self, data_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         image = data_dict['image']
         mask = data_dict['masks']
-        try:
-            assert image.shape[-1] == mask.shape[-1]
-            assert image.shape[-2] == mask.shape[-2]
-            assert image.shape[-3] == mask.shape[-3]
-
-            assert image.max() <= 1
-            assert mask.max() <= 1
-            assert image.min() >= 0
-            assert mask.min() >= 0
-        except Exception as ex:
-            print(self.ind)
-            raise ex
+        print('image shape:', image.shape)
+        print('mask shape:', image.shape)
+        # try:
+        #     assert image.shape[-1] == mask.shape[-1]
+        #     assert image.shape[-2] == mask.shape[-2]
+        #     assert image.shape[-3] == mask.shape[-3]
+        #
+        #     assert image.max() <= 1
+        #     assert mask.max() <= 1
+        #     assert image.min() >= 0
+        #     assert mask.min() >= 0
+        # except Exception as ex:
+        #     print(self.ind)
+        #     raise ex
 
         return data_dict
 
@@ -736,11 +738,95 @@ class random_affine(transform):
 
 
 class random_crop(transform):
-    def __init__(self, shape: Tuple[int, int, int] = (256, 256, 26)) -> None:
+    def __init__(self, shape: Union[Tuple[int, int, int], Tuple[int, int]] = (256, 256, 26),
+                 box_window: bool = False) -> None:
         super(random_crop, self).__init__()
+        self.center_boxes = box_window
         self.w = shape[0]
         self.h = shape[1]
         self.d = shape[2]
+
+    @staticmethod
+    # @torch.jit.script
+    def _crop_around_box(image: torch.Tensor, labels: torch.Tensor,
+                         boxes: torch.Tensor, desired_shape) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        w = desired_shape[0]
+        h = desired_shape[1]
+        d = desired_shape[2]
+
+        shape = image.shape
+        ind = torch.randint(boxes.shape[0], (1, 1), dtype=torch.long)
+
+        box = boxes[ind, :].squeeze()
+        x0 = box[1]
+        y0 = box[0]
+
+        x0 = x0.sub(torch.floor(w / 2)).long()
+        y0 = y0.sub(torch.floor(h / 2)).long()
+        x1 = x0 + w
+        y1 = y0 + h
+
+        # x = x0 if (x0 + w) < shape[1] else torch.min(torch.abs(shape[1] - (w + 1)), 0)[0]
+        # y = y0 if (y0 + h) < shape[2] else torch.min(torch.abs(shape[2] - (h + 1)), 0)[0]
+        z = 0
+
+        image = image[..., x0.item():x1.item(), y0.item():y1.item(), z:z + d]
+
+        ind_x = torch.logical_and(boxes[:, 0] < y1, boxes[:, 2] > y0)
+        ind_y = torch.logical_and(boxes[:, 1] < x1, boxes[:, 3] > x0)
+        ind = torch.logical_and(ind_x, ind_y)
+        boxes = boxes[ind, :]
+
+        labels = labels[ind]
+
+        boxes[:, 0] -= y0
+        boxes[:, 1] -= x0
+        boxes[:, 2] -= y0
+        boxes[:, 3] -= x0
+
+        boxes[:, 0] = torch.clamp(boxes[:, 0], 0, w.item())
+        boxes[:, 1] = torch.clamp(boxes[:, 1], 0, h.item())
+        boxes[:, 2] = torch.clamp(boxes[:, 2], 0, w.item())
+        boxes[:, 3] = torch.clamp(boxes[:, 3], 0, h.item())
+
+        return image, boxes, labels
+
+    def _random_crop(self, data_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        shape = data_dict['image'].shape
+        x_max = shape[1] - self.w if shape[1] - self.w > 0 else 1
+        y_max = shape[2] - self.h if shape[2] - self.h > 0 else 1
+        z_max = shape[3] - self.d if shape[3] - self.d > 0 else 1
+
+        x_min, y_min, z_min = 0, 0, 0
+
+        x = torch.randint(x_min, x_max, (1, 1)).item()
+        y = torch.randint(y_min, y_max, (1, 1)).item()
+        z = torch.randint(z_min, z_max, (1, 1)).item()
+
+        assert data_dict['masks'].max() != 0
+
+        # Check if the crop doesnt contain any positive labels.
+        # If it does, try generating new points
+        # We want to make sure every training image has something to learn
+        num_try = 0
+
+        while _crop(data_dict['masks'], x=x, y=y, z=z, w=self.w, h=self.h, d=self.d).sum() == 0:
+            num_try += 1
+            z = torch.randint(z_max, (1, 1)).item()
+            if num_try > 50:
+                raise ValueError(f"Exceded maximum try's to find a valid image")
+
+        data_dict['image'] = _crop(data_dict['image'], x=x, y=y, z=z, w=self.w, h=self.h, d=self.d)
+        data_dict['masks'] = _crop(data_dict['masks'], x=x, y=y, z=z, w=self.w, h=self.h, d=self.d)
+
+        mask = data_dict['masks']
+        c, x, y, z, = mask.shape
+        i = mask.reshape(c, -1).sum(-1) != 0
+        data_dict['masks'] = data_dict['masks'][i, ...]
+
+        return data_dict
+
 
     def __call__(self, data_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
@@ -749,14 +835,11 @@ class random_crop(transform):
         example:
             >>> import torch
             >>> from hcat.train.transforms import random_crop
-            >>>
             >>> in_image = torch.rand((300, 150, 27))
             >>> masks = torch.rand((300, 150, 27)).gt(0.5)
             >>> transform = random_crop(shape = (256, 256, 26))
             >>> in_data = {'image': in_image, 'mask': masks, 'centroids': torch.Tensor([])}
             >>> out_data: Dict[str, torch.Tensor] = transform(in_data)
-            >>> assert out_data['image'].shape =
-                (256, 150, 26epoch_range.desc = 'Loss: ' + '{:.5f}'.format(torch.tensor(epoch_loss).mean().item()))
 
 
         :param data_dict Dict[str, torch.Tensor]: data_dictionary from a dataloader. Has keys:
@@ -771,48 +854,19 @@ class random_crop(transform):
 
         :raises: RuntimeError | Trys to find a valid image. Throws error after 10 failed attemts.
         """
-        try:
-            self.check_inputs(data_dict)
-        except:
-            print(data_dict['image'].shape)
-            raise AttributeError
+        self.check_inputs(data_dict)
 
-        shape = data_dict['image'].shape
+        if self.center_boxes:
+            image, boxes, labels = self._crop_around_box(data_dict['image'], data_dict['labels'],
+                                                 data_dict['boxes'], torch.tensor((self.w, self.h, self.d)))
+            data_dict['image'] = image
+            data_dict['boxes'] = boxes
+            data_dict['labels'] = labels
 
-        x_max = shape[1] - self.w if shape[1] - self.w > 0 else 1
-        y_max = shape[2] - self.h if shape[2] - self.h > 0 else 1
-        z_max = shape[3] - self.d if shape[3] - self.d > 0 else 1
+            return data_dict
+        else:
+            return self._random_crop(data_dict)
 
-        x = torch.randint(x_max, (1, 1)).item()
-        y = torch.randint(y_max, (1, 1)).item()
-        z = torch.randint(z_max, (1, 1)).item()
-
-        assert data_dict['masks'].sum() != 0
-
-        # Check if the crop doesnt contain any positive labels.
-        # If it does, try generating new points
-        # We want to make sure every training image has something to learn
-        num_try = 0
-        while _crop(data_dict['masks'], x=x, y=y, z=z, w=self.w, h=self.h, d=self.d).sum() == 0:
-            num_try += 1
-
-            x = torch.randint(x_max, (1, 1)).item()
-            y = torch.randint(y_max, (1, 1)).item()
-            z = torch.randint(z_max, (1, 1)).item()
-
-            if num_try > 10:
-                raise ValueError("Exceded maximum try's to find a valid image.")
-
-
-        data_dict['image'] = _crop(data_dict['image'], x=x, y=y, z=z, w=self.w, h=self.h, d=self.d)
-        data_dict['masks'] = _crop(data_dict['masks'], x=x, y=y, z=z, w=self.w, h=self.h, d=self.d)
-
-        mask = data_dict['masks']
-        c, x, y, z, = mask.shape
-        i = mask.reshape(c, -1).sum(-1) != 0
-        data_dict['masks'] = data_dict['masks'][i,...]
-
-        return data_dict
 
 
 class random_h_flip(transform):
@@ -939,7 +993,6 @@ class to_cuda(transform):
 
         :return: data_dict Dict[str, torch.Tensor]: dictonary with identical keys as input, but with transformed values
         """
-        self.check_inputs(data_dict)
         for key in data_dict:
             data_dict[key] = data_dict[key].cuda()
         return data_dict
@@ -954,6 +1007,8 @@ class transformation_correction(transform):
         """
         Some Geometric transforms may alter the locations of cells so drastically that the centroid may no longer
         be accurate. This recalculates the centroids based on the current mask.
+
+        clamps image data to 0 and 1
 
         :param data_dict Dict[str, torch.Tensor]: data_dictionary from a dataloader. Has keys:
             key : val
@@ -992,9 +1047,9 @@ class transformation_correction(transform):
 
             if torch.any(torch.isnan(centroid[i, :])):  # Sometimes shit is NaN, if it is, get rid of it
                 centroid[i, :] = torch.tensor([-1, -1, -1], device=device)
-                ind[i] == 0
 
         data_dict['centroids'] = centroid[ind.bool()]
+        data_dict['image'] = torch.clamp(data_dict['image'], min=0, max=1)
         data_dict['masks'] = data_dict['masks'][ind.bool(), :, :, :]
 
         assert torch.isnan(data_dict['centroids']).sum() == 0
@@ -1111,12 +1166,16 @@ class mask_to_box(transform):
         if data_dict['boxes'].ndim != 2: raise ShapeError(
             f'Expected value pair of key: "boxes" to have ndim=2, not {data_dict["boxes"].ndim}')
 
+        mask = data_dict['masks']
+
         device = data_dict['image'].device
         _, x, y, z = data_dict['image'].shape
         n, _, _, _ = data_dict['masks'].shape
 
         boxes = torch.zeros([n, 4], device=device)
         labels = torch.zeros([n], device=device)
+
+
         for i in range(n):
             nonzero = torch.nonzero(data_dict['masks'][i, ...]) # Q, 3=[x,y,z]
             labels[i] = data_dict['masks'][i,...].max()
@@ -1126,14 +1185,17 @@ class mask_to_box(transform):
                 y0 = torch.min(nonzero[:, 0])
                 y1 = torch.max(nonzero[:, 0])
 
+
                 boxes[i, 0] = x0
                 boxes[i, 1] = y0
                 boxes[i, 2] = x1
                 boxes[i, 3] = y1
 
+
         data_dict['boxes'] = boxes
         data_dict['masks'] = torch.empty((0,0,0,0), device=device)
         data_dict['labels'] = labels.type(torch.int64)
+        assert boxes.ndim == 2
 
         return data_dict
 

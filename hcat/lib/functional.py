@@ -34,54 +34,59 @@ import matplotlib.pyplot as plt
 
 
 class VectorToEmbedding(nn.Module):
-    def __init__(self, scale: Tensor = torch.tensor([25]), device='cuda'):
+    def __init__(self, scale: Tensor = torch.tensor([50]), device='cuda'):
         if not isinstance(scale, torch.Tensor):
             scale = torch.tensor([scale])
         self.scale = scale.to(device) if scale.numel() != 1 else torch.tensor([scale, scale, scale],
-                                                                            device=device).float()
+                                                                              device=device).float()
         super(VectorToEmbedding, self).__init__()
 
-    def forward(self, vector: Tensor) -> Tensor:
+    def forward(self, vector: Tensor, n: int = 1) -> Tensor:
         """
-        Constructs a mesh grid and adds the vector matrix to it.
-
-        Roughly performs the following operation.
-
-        embedding = vector + meshgrid(vector.shape)
-
-        Example:
-
-        >>> from hcat.lib.functional import VectorToEmbedding
-        >>> from hcat.models.r_unet import embed_model as model
-        >>> import torch
-        >>> image = torch.load('image.trch') # [B, C, X, Y, Z]
-        >>> vector = model(image)
-        >>> vec2emb = torch.jit.script(VectorToEmbedding)
-        >>> embedding = vec2emb(vector)
-
-
         :param vector: [B, 3=[x,y,z], X, Y, Z] prediction vector from spatial embedding model
         :return: [B, 3=[x,y,z], X, Y, Z] projected spatial embedding vector
         """
         if vector.ndim != 5: raise ShapeError('Expected input tensor ndim == 5')
 
+        # apply the vec to the mesh.
+        # use the embedding as indexes to apply the vector N times.
         num: Tensor = self.scale.float()
 
         x_factor = 1 / num[0]
         y_factor = 1 / num[1]
         z_factor = 1 / num[2]
 
-        xv, yv, zv = torch.meshgrid(
-            [torch.linspace(0, x_factor * vector.shape[2], vector.shape[2], device=vector.device),
-             torch.linspace(0, y_factor * vector.shape[3], vector.shape[3], device=vector.device),
-             torch.linspace(0, z_factor * vector.shape[4], vector.shape[4], device=vector.device)])
+        with torch.no_grad():
+            _x = torch.linspace(0, x_factor * vector.shape[2], vector.shape[2], device=vector.device)
+            _y = torch.linspace(0, y_factor * vector.shape[3], vector.shape[3], device=vector.device)
+            _z = torch.linspace(0, z_factor * vector.shape[4], vector.shape[4], device=vector.device)
 
-        mesh = torch.cat((xv.unsqueeze(0).unsqueeze(0),
-                          yv.unsqueeze(0).unsqueeze(0),
-                          zv.unsqueeze(0).unsqueeze(0)), dim=1)
+            xv, yv, zv = torch.meshgrid([_x, _y, _z])
 
-        # Return addition in place if not training
-        return mesh + vector if self.training else mesh.add_(vector)
+            mesh = torch.cat((xv.unsqueeze(0).unsqueeze(0),
+                              yv.unsqueeze(0).unsqueeze(0),
+                              zv.unsqueeze(0).unsqueeze(0)), dim=1)
+
+        mesh = mesh + vector if self.training else mesh.add_(vector)
+
+        for _ in range(n - 1):  # Only executes if n > 1
+            # convert to index.
+            index = (mesh * self.scale[0]).round()
+            b, c, x, y, z = index.shape
+            for i, k in enumerate([x, y, z]):
+                index[:, i, ...] = torch.clamp(index[:, i, ...], 0, k)
+
+            index = (index[:, [0], ...] * y * z) + (index[:, [1], ...] * z) + (index[:, [2], ...])
+            # x_ind  = index[:,0,...].flatten()
+            # y_ind  = index[:,1,...].flatten()
+            # z_ind  = index[:,2,...].flatten()
+
+            index = index.clamp(0, x * y * z - 1).long()
+            # mesh = mesh + vector.flatten(start_dim=2)[]
+            for i in range(c):
+                mesh[:, [i], ...] = mesh[:, [i], ...] + vector[:, [i], ...].take(index)
+
+        return mesh
 
 
 class EmbeddingToProbability(nn.Module):
@@ -136,26 +141,26 @@ class EmbeddingToProbability(nn.Module):
 
         b, _, x, y, z = embedding.shape
         _, n, _ = centroids.shape
-        prob = torch.zeros((b, n, x, y, z), device=embedding.device)
+        # prob = torch.zeros((b, n, x, y, z), device=embedding.device)
+        prob_list = torch.jit.annotate(List[Tensor], [])
 
         # Common operation. Done outside of loop for speed.
-        sigma = sigma.pow(2).mul(2)
+        newshape = (centroids.shape[0], 3, 1, 1, 1)
+        sigma = sigma.pow(2).mul(2).view(newshape).mul(-1)
 
         # Calculate euclidean distance between centroid and embedding for each pixel and
         # turn that distance to probability and put it in preallocated matrix for each n
         # In eval mode uses in place operations to save memory!
 
-        if self.training:
-            for i in range(n):
-                euclidean_norm = (embedding - centroids[:, i, :].view(centroids.shape[0], 3, 1, 1, 1)).pow(2)
-                prob[:, i, :, :, :] = torch.exp(
-                    (euclidean_norm / sigma.view(centroids.shape[0], 3, 1, 1, 1)).mul(-1).sum(dim=1)).squeeze(1)
+        # A bit scuffed but should optimize well in torchscript
+        for i in range(n):
+            prob_list += [torch.exp((embedding - centroids[:, i, :].view(newshape)).pow(2).div(sigma).sum(dim=1)).squeeze(1)]
+        prob = torch.stack(prob_list, dim=1)
 
-        else:  # If in Eval Mode - do a bunch of inplace operations for speed and memory efficiency
-            for i in range(centroids.shape[1]):
-                euclidean_norm = (embedding - centroids[:, i, :].view(centroids.shape[0], 3, 1, 1, 1)).pow(2)
-                prob[:, i, :, :, :] = torch.exp(
-                    euclidean_norm.div_(sigma.view(centroids.shape[0], 3, 1, 1, 1)).mul_(-1).sum(dim=1)).squeeze(1)
+        # else:  # If in Eval Mode - do a bunch of inplace operations for speed and memory efficiency
+        #     for i in range(centroids.shape[1]):
+        #         euclidean_norm = (embedding - centroids[:, i, :].view(centroids.shape[0], 3, 1, 1, 1)).pow(2)
+        #         prob[:, i, :, :, :] = torch.exp(euclidean_norm.div_(sigma).sum(dim=1)).squeeze(1)
         return prob
 
 
@@ -207,9 +212,9 @@ def learnable_centroid(embedding: Tensor, mask: Tensor, method: str = 'mean',
 
 class EstimateCentroids(nn.Module):
     def __init__(self, downsample: int = 1,
-                 n_erode: int = 4,
+                 n_erode: int = 1,
                  eps: float = 1,
-                 min_samples: int = 10,
+                 min_samples: int = 5,
                  scale: Tensor = torch.tensor([25]),
                  device='cuda'):
         """
@@ -448,7 +453,6 @@ class PredictCurvature:
                     curvature, distance, apex = self.fit(image, 'maxproject')
                 except Exception:
                     curvature, distance, apex = None, None, None
-
 
 
         elif self.method == 'mask':

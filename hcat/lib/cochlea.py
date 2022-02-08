@@ -19,12 +19,13 @@ import re
 from skimage.io import imsave
 import skimage.segmentation
 
+
 class Cochlea:
     def __init__(self,
                  mask: Tensor = None,
                  start_time: str = None,
                  analysis_time: str = None,
-                 analysis_type: str = None, # Either 'detect' or 'segment'
+                 analysis_type: str = None,  # Either 'detect' or 'segment'
                  filename: str = '',
                  path: str = '',
                  script_dir: str = None,
@@ -121,7 +122,6 @@ class Cochlea:
         self.cochlear_length = cochlear_length
         self.cochlear_distance = cochlear_distance
         self.apex = apex
-
 
         # gathered at runtime
         self.script_dir = os.getcwd() if script_dir is None else script_dir
@@ -346,7 +346,7 @@ class Cochlea:
                 mask[i, ...][index[0, ...]] = int(color[i])
         return mask
 
-    @graceful_exit('\x1b[1;31;40m' + 'ERROR: csv generation failed.' + '\x1b[0m')
+    # @graceful_exit('\x1b[1;31;40m' + 'ERROR: csv generation failed.' + '\x1b[0m')
     def write_csv(self, filename: Optional[Union[bool, str]] = None) -> None:
         """
         Write results of cochlea object to a csv file for futher statistical analysis.
@@ -379,8 +379,10 @@ class Cochlea:
                 f.write(f'{cell.loc[1]},{cell.loc[2]},{cell.loc[3]},{cell.volume},{cell.summed},')
 
                 for id in cell.channel_names:
-                    f.write(f'{cell.channel_stats[id]["mean"]},{cell.channel_stats[id]["median"]},{cell.channel_stats[id]["std"]},{cell.channel_stats[id]["var"]},')
-                    f.write(f'{cell.channel_stats[id]["min"]},{cell.channel_stats[id]["max"]},{cell.channel_stats[id]["%zero"]},{cell.channel_stats[id]["%saturated"]},')
+                    f.write(
+                        f'{cell.channel_stats[id]["mean"]},{cell.channel_stats[id]["median"]},{cell.channel_stats[id]["std"]},{cell.channel_stats[id]["var"]},')
+                    f.write(
+                        f'{cell.channel_stats[id]["min"]},{cell.channel_stats[id]["max"]},{cell.channel_stats[id]["%zero"]},{cell.channel_stats[id]["%saturated"]},')
                 f.write('\n')
             f.close()
         elif self.analysis_type == 'detect':
@@ -401,7 +403,7 @@ class Cochlea:
                 f.write('\n')
             f.close()
 
-    @graceful_exit('\x1b[1;31;40m' + 'ERROR: Figure Render failed.' + '\x1b[0m')
+    # @graceful_exit('\x1b[1;31;40m' + 'ERROR: Figure Render failed.' + '\x1b[0m')
     def make_segment_fig(self, filename: Optional[str] = None) -> None:
         """
         Make summary figure for quick interpretation of results.
@@ -437,8 +439,7 @@ class Cochlea:
 
         num_cell = []
         # fig.set_size_inches(11,8)
-        ind = [[0,0], [0,1], [1,0], [1,1]]
-
+        ind = [[0, 0], [0, 1], [1, 0], [1, 1]]
 
         for i, key in enumerate(self.cells[0].channel_names):
             signal = []
@@ -453,14 +454,13 @@ class Cochlea:
                     perc.append(cell.percent_loc)
                 signal.append(cell.channel_stats[key]['mean'])
 
-
             if len(perc) != len(signal):
                 perc = [i for i in range(len(signal))]
 
             perc = torch.tensor(perc) / max(perc)
             signal = torch.tensor(signal)
             channel = key
-            signal = signal.div(signal.max()*2)
+            signal = signal.div(signal.max() * 2)
 
             mean_gfp = []
             try:
@@ -489,7 +489,6 @@ class Cochlea:
             hist_ax[x][y].spines['left'].set_visible(False)
             hist_ax[x][y].set_yticks([], minor=True)
             hist_ax[x][y].axis('off')
-
 
         # new = fig.add_axes([0, 0, 0.5, 0.5])
         # new.plot([0,1,2,3,4], [2,3,4,5,6])
@@ -550,10 +549,10 @@ class Cochlea:
         # image = torchvision.transforms.functional.adjust_brightness(image, factor)
         # image = torchvision.transforms.functional.adjust_contrast(image, factor*0.65)
 
-        image[0,...] = image[0,...] * 0
+        image[0, ...] = image[0, ...] * 0
         _, x, y = image.shape
         ratio = x / y
-        fig = plt.figure(figsize=(y/200, x/200))
+        fig = plt.figure(figsize=(y / 200, x / 200))
         ax = plt.Axes(fig, [0., 0., 1., 1.])
         ax.set_axis_off()
         fig.add_axes(ax)
@@ -604,8 +603,8 @@ class Cochlea:
 
         if self.curvature is None:
             print('\x1b[1;33;40mWARNING: ' +
-                      'Predicted Cochlear Distance is below 4000um. Not sufficient information to generate cochleogram.'
-                      + '\x1b[0m')
+                  'Predicted Cochlear Distance is below 4000um. Not sufficient information to generate cochleogram.'
+                  + '\x1b[0m')
             return None
 
         def hist_coords(dist, nbin=50):
@@ -661,6 +660,7 @@ class Cochlea:
         plt.close(fig)
 
         return fig
+
 
 if __name__ == '__main__':
     a = torch.randint(0, 255, (1, 1000, 1000, 45))

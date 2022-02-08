@@ -1,11 +1,10 @@
-import torch.nn as nn
 import torch
 from typing import Optional
 from cellpose import models
 from hcat.train.dataloader import colormask_to_torch_mask
-from hcat.lib.utils import graceful_exit
 from hcat.backends.backend import Backend
 from hcat import ShapeError
+
 
 # DOCUMENTED
 
@@ -17,6 +16,7 @@ class Cellpose(Backend):
     Cellpose: A generalist algorithm for cellular segmentation. Nature Methods, 18(1), 100-106.
 
     """
+
     def __init__(self, device: Optional[str] = 'cuda'):
         """
         Initializes a cell segmentation backbone.
@@ -30,7 +30,6 @@ class Cellpose(Backend):
         self.model = models.Cellpose(gpu=device, model_type='cyto')
         self.channels = [0, 0]
 
-    @graceful_exit('\x1b[1;31;40m' + 'ERROR: Cellpose Failed. Aborting...' + '\x1b[0m')  # Throws text instead of error
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         """
         Inputs an image and outputs a probability mask of everything seen in the image.
@@ -59,7 +58,9 @@ class Cellpose(Backend):
         :return: [B, N, X, Y, Z] output segmentation mask where each pixel value is a cell id (0 is background)
         """
 
-        if image.ndim != 5: raise ShapeError(f'Image ndim should be 5 with shape [B, C, X, Y, Z] not {image.ndim} with shape {image.shape}')
+        if image.ndim != 5:
+            raise ShapeError(
+                f'Image ndim should be 5 with shape [B, C, X, Y, Z] not {image.ndim} with shape {image.shape}')
         b, c, x, y, z = image.shape
 
         if self.image_reject and self._is_image_bad(image):

@@ -1,31 +1,29 @@
 import torch
+from torch import Tensor
+
 import hcat.lib.functional
 from hcat.lib.functional import IntensityCellReject
 from hcat.backends.backend import Backend
 from hcat.models.r_unet import embed_model as RUnet
 from hcat.train.transforms import median_filter, erosion
 import hcat.lib.utils
-from hcat.lib.utils import graceful_exit
-
-import os.path
-import wget
 
 from typing import Dict, Optional
 
 
 class SpatialEmbedding(Backend):
     def __init__(self,
-                 sigma: Optional[torch.Tensor] = torch.tensor([0.02, 0.02, 0.02]),
+                 sigma: Optional[Tensor] = torch.tensor([0.02, 0.02, 0.02]),
                  device: Optional[str] = 'cuda',
                  model_loc: Optional[str] = None,
                  postprocessing: Optional[bool] = True,
                  scale: Optional[int] = 25,
                  figure: Optional[str] = None,
-                 archetecture: Optional[RUnet] = RUnet):
+                 architecture: Optional[RUnet] = RUnet):
         """
         Initialize Spatial embedding Algorithm.
 
-        :param sigma: torch.Tensor[sigma_x, sigma_y, sigma_z] values for gaussian probability estimation.
+        :param sigma: Tensor[sigma_x, sigma_y, sigma_z] values for gaussian probability estimation.
         :param device: String value for torch device by which to run segmentation backbone on.
         :param model_loc: Path to trained model files.
         :param postprocessing: Disable segmentation postprocessing, namely
@@ -35,8 +33,8 @@ class SpatialEmbedding(Backend):
 
         super(SpatialEmbedding, self).__init__()
 
-        self.url = 'https://github.com/buswinka/hcat/blob/master/modelfiles/spatial_embedding.trch?raw=true'
-        # self.url = None
+        # self.url = 'https://github.com/buswinka/hcat/blob/master/modelfiles/spatial_embedding.trch?raw=true'
+        self.url = None
         self.scale = torch.tensor(scale)
         self.device = device
         self.sigma = sigma.to(device)
@@ -45,9 +43,9 @@ class SpatialEmbedding(Backend):
         self.figure = figure
 
         if self.url:
-            self.model = self._model_loader_url(self.url, archetecture, device)
+            self.model = self._model_loader_url(self.url, architecture, device)
         else:
-            self.model = self._model_loader_path(model_loc, archetecture, device)
+            self.model = self._model_loader_path(model_loc, architecture, device)
 
         self.vector_to_embedding = torch.jit.script(
             hcat.lib.functional.VectorToEmbedding(scale=self.scale).requires_grad_(False).eval())
@@ -64,14 +62,12 @@ class SpatialEmbedding(Backend):
 
         self.nms = hcat.lib.functional.nms().requires_grad_(False)
 
-
         self.centroids = None
         self.vec = None
         self.embed = None
         self.prob = None
 
-    @graceful_exit('\x1b[1;31;40m' + 'ERROR: Spatial Embedding Failed. Aborting...' + '\x1b[0m')
-    def forward(self, image: torch.Tensor) -> torch.Tensor:
+    def forward(self, image: Tensor) -> Tensor:
         """
         Inputs an image and outputs a probability mask of everything seen in the image.
 
@@ -106,9 +102,7 @@ class SpatialEmbedding(Backend):
             return torch.zeros((b, 0, x, y, z), device=self.device)
 
 
-        # Evaluate Neural Network Model
-
-        out: torch.Tensor = self.model(image)
+        out: Tensor = self.model(image) # Evaluate Neural Network Model
 
         # Assign Outputs
         probability_map = out[:, [-1], ...]
@@ -117,25 +111,17 @@ class SpatialEmbedding(Backend):
         self.prob = probability_map.cpu()
         self.vec = out.cpu()
 
-        out: torch.Tensor = self.vector_to_embedding(out)
-
+        out: Tensor = self.vector_to_embedding(out)
         self.embed = out.cpu()
 
-        centroids: Dict[str, torch.Tensor] = self.estimate_centroids(out, probability_map)
+        self.centroids: Dict[str, Tensor] = self.estimate_centroids(
+            self.vector_to_embedding(self.vec.cuda(), n=5), probability_map)
 
-        self.centroids = centroids
-
-
-
-
-        out: torch.Tensor = self.embedding_to_probability(out, centroids, self.sigma)
-
+        out: Tensor = self.embedding_to_probability(out, self.centroids, self.sigma)
 
         # Reject cell masks that overlap or meet min Myo7a criteria
         if self.postprocessing:
-            out: torch.Tensor = self.intensity_rejection(out, image)
-
-        # print(centroids.shape, out.shape)
+            out: Tensor = self.intensity_rejection(out, image)
 
         if out.numel() == 0:
             return torch.zeros((b, 0, x, y, z), device=self.device)
@@ -151,29 +137,3 @@ class SpatialEmbedding(Backend):
         self.zero_grad()
 
         return out
-
-    def load(self, model_loc: str) -> None:
-        """
-        Initializes model weights from a url or filepath.
-
-        Example:
-
-        >>> from hcat.backends.spatial_embedding import SpatialEmbedding
-        >>> backend = SpatialEmbedding()
-        >>>
-        >>> url = 'https://www.model_location.com/model.trch'
-        >>> backend.load(url) # Works with url
-        >>>
-        >>> model_path = 'path/to/my/model.trch'
-        >>> backend.load(model_path) # Also works with path
-
-
-        :param model_loc: url or filepath
-        :return: None
-        """
-        if self._is_url(model_loc):
-            return self._model_loader_url(model_loc, RUnet(in_channels=1).requires_grad_(False), self.device)
-        else:
-            return self._model_loader_path(model_loc, RUnet(in_channels=1).requires_grad_(False), self.device)
-
-
