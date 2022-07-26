@@ -123,9 +123,9 @@ class Cochlea:
         self.cochlear_distance = cochlear_distance
         self.apex = apex
 
-        # gathered at runtime
-        self.script_dir = os.getcwd() if script_dir is None else script_dir
-        self.scripts = self._get_python_scripts(self.script_dir)
+        # # gathered at runtime
+        # self.script_dir = os.getcwd() if script_dir is None else script_dir
+        # self.scripts = self._get_python_scripts(self.script_dir)
 
     ####################################################################################################################
     #                                                Getters and Setters                                               #
@@ -392,6 +392,10 @@ class Cochlea:
                 filename = os.path.splitext(self.path)[0] + '.csv'  # Remove .lif and add .csv
             elif filename is None and self.path is None:
                 filename = 'analysis.csv'
+
+            filename = filename if filename.endswith('.csv') else os.path.splitext(filename)[0] + '.csv'
+
+
             f = open(filename, 'w')
             f.write(f'Filename: {self.filename}\n')
             f.write(f'Analysis Date: {self.analysis_date}\n')
@@ -538,7 +542,6 @@ class Cochlea:
         :param filename:
         :return:
         """
-        print('Rendering Figure...', end='')
         image = image.cpu() if image.min() < 0 else image.cpu()
 
         while image.shape[0] < 3:
@@ -595,7 +598,6 @@ class Cochlea:
         else:
             fig.savefig(self.path[:-4:] + '.jpg', dpi=400)
         plt.close(fig)
-        print('DONE')
 
     def make_cochleogram(self, filename: Optional[str] = None, type: Optional[str] = None):
 

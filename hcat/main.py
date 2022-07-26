@@ -35,16 +35,16 @@ def segment(f: str, channel: int, intensity_reject_threshold: float,
             dtype: Optional[str],
             unet: bool, cellpose: bool, no_post: bool,
             figure: Optional[bool]) -> None:
-    raise NotImplementedError('Segmentation currently in not supported.')
-    # files = glob.glob(f)
-    # for filename in files:
-    #     try:
-    #         _segment(f=filename, channel=channel, intensity_reject_threshold=intensity_reject_threshold,
-    #                  dtype=dtype, unet=unet, cellpose=cellpose, no_post=no_post, figure=figure)
-    #     except Exception:
-    #         print(f'Error in file: {filename}')
 
-    # return None
+    files = glob.glob(f)
+    for filename in files:
+        try:
+            _segment(f=filename, channel=channel, intensity_reject_threshold=intensity_reject_threshold,
+                     dtype=dtype, unet=unet, cellpose=cellpose, no_post=no_post, figure=figure)
+        except Exception:
+            print(f'Error in file: {filename}')
+
+    return None
 
 
 @cli.command()

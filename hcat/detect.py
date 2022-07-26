@@ -121,7 +121,7 @@ def _detect(f: Optional[str] = None,
         if image.max() == 0 or image.min() == image.max():
             continue
 
-        image: List[Tensor] = [prepare_image(image).to(torch.float32)]
+        image: List[Tensor] = [prepare_image(image)]
 
         # Evaluate Deep Learning Model
         out = model(image)

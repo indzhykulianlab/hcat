@@ -1,5 +1,8 @@
 import PySimpleGUI as sg
 from hcat.lib.cell import Cell
+from hcat.lib.utils import calculate_indexes
+from itertools import product
+
 from hcat.lib.cochlea import Cochlea
 import skimage.io
 import torchvision.utils
@@ -17,6 +20,8 @@ from hcat.detect import _cell_nms
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, FigureCanvasAgg
 import torchvision.transforms.functional as ttf
+
+from hcat.backends.detection import FasterRCNN_from_url
 
 MAX_WIDTH, MAX_HEIGHT = 900, 900
 
@@ -49,7 +54,7 @@ class gui:
             [sg.Check(text='Live Update: ', key='live_update', enable_events=True)]
         ]
         image_column = [
-            [sg.Image(filename='', key='image', size=(900, 900))]
+            [sg.Image(filename='', key='image', size=(900, 900), enable_events=True)]
         ]
 
         adjustment_column = [
@@ -87,7 +92,7 @@ class gui:
              sg.Slider(key='b_contrast', range=(0, 2), default_value=1, enable_events=True, orientation='h',
                        resolution=0.01,
                        expand_x=True, size=(1, 10))],
-
+            [sg.Button('Reset', key='reset_rgb')],
             [sg.HorizontalSeparator(pad=(0, 30))],
             [sg.Text('OHC: None', key='OHC_count')],
             [sg.Text('IHC: None', key='IHC_count')],
@@ -102,13 +107,15 @@ class gui:
                    ]]
 
         self.window = sg.Window('HCAT', layout, finalize=True, return_keyboard_events=True)
-        print(self.window)
 
         self.rgb_adjustments = ['r_brightness', 'r_contrast', 'g_brightness', 'g_contrast', 'b_brightness',
                                 'b_contrast', ]
 
         for key in self.rgb_adjustments:
             self.window[key].bind('<ButtonRelease-1>', ' release')
+
+        self.window['image'].bind('<B1-Motion>', 'pan')
+        # self.window['image'].bind('<Button-1>', 'pan')
 
         self.rgb_release = [x + ' release' for x in self.rgb_adjustments]
 
@@ -143,18 +150,23 @@ class gui:
         self.labels = None
         self.scores = None
 
+        self.model = None
+
 
     def main_loop(self):
 
         while True:
             event, values = self.window.read(timeout=20)
 
-            values[
-                'Browse'] = '/home/chris/Dropbox (Partners HealthCare)/Gersten et al 2020 Fig 3 images/Fig7_max_projections adjusted/Carbo229_8kHz_63X_Maximum intensity projection.tif'
+            # values[
+            #     'Browse'] = '/home/chris/Dropbox (Partners HealthCare)/Gersten et al 2020 Fig 3 images/Fig7_max_projections adjusted/Carbo229_8kHz_63X_Maximum intensity projection.tif'
 
             self.rgb = [values['Red'], values['Green'], values['Blue']]
             self.contrast = [values['r_contrast'], values['g_contrast'], values['b_contrast']]
             self.brightness = [values['r_brightness'], values['g_brightness'], values['b_brightness']]
+
+            if event == 'pan':
+                print('CLICKED: ', values['pan'])
 
             if event == 'Exit' or event == sg.WIN_CLOSED:
                 return
@@ -163,17 +175,21 @@ class gui:
                 sg.popup_quick_message('Live model update enabled! May cause crashes on larger images...')
 
             # Load an image for the first time
+            if event == 'Load' and values['Browse'] == '':
+                sg.popup_ok('No File Selected. Please Select a file via "Browse"')
+
             if event == 'Load' and values['Browse'] != '':
                 self.load_image(values['Browse'])
+
                 self.draw_image()
                 self.render_hist()
 
-                self.__LOADED__ = True
 
             # Update Histogram:
             if event in self.rgb_adjustments and self.__LOADED__:
                 if values['live_update']:
-                    self.run_detection_model()
+                    # self.run_detection_model()
+                    self.fast_model()
                     self.threshold_and_nms(values['Threshold'], values['NMS'])
 
                 self.draw_image()
@@ -201,7 +217,8 @@ class gui:
                 sg.popup_quick_message('No File Loaded')
 
             if event == 'Run Analysis' and self.__LOADED__:
-                self.run_detection_model()
+                # self.run_detection_model()
+                self.fast_model()
                 self.threshold_and_nms(values['Threshold'], values['NMS'])
                 self.draw_image()
 
@@ -210,12 +227,21 @@ class gui:
                 self.draw_image()
 
             if event == 'Save' and self.labels is not None:
-                self.save(values['Threshold'], values['NMS'], values['Browse'])
+                self.save(values['Browse'])
                 sg.popup_quick_message('Saved!')
 
+            if event == 'reset_rgb':
+                self.reset_rgb_sliders()
+                self.window.refresh()
+                self.contrast = [1.0, 1.0, 1.0]
+                self.brightness = [1.0, 1.0, 1.0]
+
+                if self.display_image is not None:
+                    self.render_hist()
+                    self.draw_image()
 
     def run_detection_model(self):
-        _image = self.scaled_image
+        _image = self.scaled_image.clone()
         for i in range(3):
             if self.rgb[i]:
                 _image[i] = ttf.adjust_brightness(_image[[i], ...], self.brightness[i])
@@ -230,23 +256,22 @@ class gui:
                                            save_png=False,
                                            model=self.model,
                                            return_model=True,
+                                           no_curve=True,
                                            )
 
         self.all_boxes: Tensor = torch.tensor([cell.boxes.cpu().tolist() for cell in self.cochlea.cells]) * self.ratio
         self.all_scores: Tensor = torch.tensor([cell.scores for cell in self.cochlea.cells])
         self.all_labels: List[str] = [cell.type for cell in self.cochlea.cells]
 
-    @staticmethod
-    def image_to_byte_array(image: Image) -> bytes:
-        array = io.BytesIO()
-        image.save(array, format='PNG')
-        return array.getvalue()
-
     def load_image(self, f: str):
 
         self.clear_state()
 
         img: np.array = hcat.lib.utils.load(f, verbose=False)
+
+        if img is None:
+            sg.popup_ok(f'Failed to Load: {f}.\nFile Not Found.')
+
         scale: int = hcat.lib.utils.get_dtype_offset(img.dtype, img.max())
         self.raw_image: Tensor = hcat.lib.utils.image_to_float(img, scale, verbose=False).to(self.device)
         self.scaled_image: Tensor = hcat.lib.utils.correct_pixel_size_image(self.raw_image, None,
@@ -259,6 +284,8 @@ class gui:
                                                   scale_factor=(self.ratio, self.ratio)).squeeze(0)
         print(f'Loaded image and scaled to shape {self.display_image_scaled.shape}')
 
+        self.__LOADED__ = True
+
     def clear_state(self):
         self.all_boxes = None
         self.all_labels = None
@@ -269,11 +296,13 @@ class gui:
         self.scores = None
 
     def threshold_and_nms(self, thr, nms_thr) -> Tensor:
-        cell_key = {'OHC': '#56B4E9', 'IHC': '#E69F00'}
 
         ind = self.all_scores > (thr / 100)
+        if isinstance(self.all_labels, list):
+            _labels = torch.tensor([1 if l == 'OHC' else 2 for l, i in zip(self.all_labels, ind) if i > 0])
+        else:
+            _labels = self.all_labels[ind]
 
-        _labels = torch.tensor([1 if l == 'OHC' else 2 for l, i in zip(self.all_labels, ind) if i > 0])
         _boxes = self.all_boxes[ind, :]
         _scores = self.all_scores[ind]
 
@@ -326,7 +355,6 @@ class gui:
 
         self.fig = plt.gcf()
 
-
     def delete_fig_agg(self):
         if self.fig_agg:
             self.fig_agg.get_tk_widget().forget()
@@ -341,6 +369,9 @@ class gui:
 
     def draw_image(self):
         cell_key = {'OHC': '#56B4E9', 'IHC': '#E69F00'}
+
+        if not self.__LOADED__:
+            return
 
         _image = self.display_image_scaled.clone()
 
@@ -371,13 +402,32 @@ class gui:
         self.get_color_histogram()
         self.draw_figure()
 
-    def save(self, thr, nms, filename):
-        _cells = [c for c in self.cochlea.cells if c.scores > thr]
-        _cells = self.cell_nms(_cells, nms)
-        self.cochlea.cells = _cells
+    def reset_rgb_sliders(self):
+        for key in self.rgb_adjustments:
+            self.window[key].update(value=1)
+        self.window.refresh()
 
-        self.cochlea.write_csv(filename=filename)
-        self.cochlea.make_detect_fig(self.scaled_image, filename=filename)
+    def save(self, filename):
+        cells = []
+        _boxes = self.boxes.clone().div(self.ratio)
+
+        for i in range(self.boxes.shape[0]):
+            type = 'OHC' if self.labels[i] == 1 or self.labels[i] == 'OHC' else 'IHC'
+            x0, y0, x1, y1 = _boxes[i, :]
+            loc = (0, x0 + (x1 - x0)/2, y0 + (y1 - y0)/2, 0)
+            cells.append(
+                Cell(loc=torch.tensor(loc),
+                     id=i+1,
+                     scores=self.scores[i],
+                     boxes=_boxes[i, :],
+                     cell_type=type)
+            )
+        c = Cochlea(filename=filename,
+                    cells=cells,
+                    analysis_type='detect')
+
+        c.write_csv(filename=filename + '_analyzed.csv')
+        c.make_detect_fig(self.scaled_image, filename=filename+'_analyzed.jpg')
 
     def update_cell_counts(self):
         if self.labels:
@@ -388,7 +438,6 @@ class gui:
 
         self.window['IHC_count'].update(f'IHC: {ihc}')
         self.window['OHC_count'].update(f'OHC: {ohc}')
-
 
     @staticmethod
     def cell_nms(cells: List[Cell], nms_threshold: float) -> List[Cell]:
@@ -417,6 +466,57 @@ class gui:
 
         return [c for c in cells if c]
 
+    @staticmethod
+    def image_to_byte_array(image: Image) -> bytes:
+        array = io.BytesIO()
+        image.save(array, format='PNG')
+        return array.getvalue()
+
+    def fast_model(self):
+
+        if self.model is None:
+            __model_url__ = 'https://www.dropbox.com/s/opf43jwcbgz02vm/detection_trained_model.trch?dl=1'
+            sg.popup_quick_message('Loading model from file. May take a while.')
+            self.model = FasterRCNN_from_url(url=__model_url__, device=self.device)
+
+            _model = torch.jit.script(self.model)
+            _model.save('/home/chris/Desktop/frcnn.trch')
+
+        _image = self.scaled_image.clone()[0:3,...]
+
+        for i in range(3):
+            if self.rgb[i]:
+                _image[i] = ttf.adjust_brightness(_image[[i], ...], self.brightness[i])
+                _image[i] = ttf.adjust_contrast(_image[[i], ...], self.contrast[i])
+            else:
+                _image[i] = _image[i, ...] * self.rgb[i]
+
+        _, x, y = _image.shape
+        x_ind: List[List[int]] = calculate_indexes(10, 246, x, x)  # [[0, 255], [30, 285], ...]
+        print(x_ind)
+        y_ind: List[List[int]] = calculate_indexes(10, 246, y, y)  # [[0, 255], [30, 285], ...]
+
+        generator = product(x_ind, y_ind)
+        boxes = []
+        labels = []
+        scores = []
+        for x, y in generator:
+            out = self.model([_image[:, x[0]:x[1], y[0]:y[1]]])
+            out = out[1][0] if isinstance(out, tuple) else out[0]
+            _scores: Tensor = out['scores']
+            _boxes: Tensor = out['boxes']
+            _labels: Tensor = out['labels']
+
+            _boxes[:, [0, 2]] += y[0]
+            _boxes[:, [1, 3]] += x[0]
+
+            boxes.extend(_boxes.tolist())
+            scores.extend(_scores.tolist())
+            labels.extend(_labels.tolist())
+
+        self.all_boxes = torch.tensor(boxes) * self.ratio
+        self.all_scores = torch.tensor(scores)
+        self.all_labels = torch.tensor(labels)
 
 if __name__ == '__main__':
     gui().main_loop()

@@ -11,11 +11,11 @@ investigating tonotopic and morphological trends.
 ## Quickstart Guide
 #### Installation
 * Install [Anaconda](https://www.anaconda.com/)
-* In a terminal or anaconda prompt, copy and paste: `conda create -yn hcat python=3.9'
+* In a terminal or anaconda prompt, copy and paste: `conda create -yn hcat python=3.9`
 * Then copy and paste: `conda activate hcat`
 * Install pytorch for CPU ONLY: `conda install pytorch torchvision torchaudio cpuonly -c pytorch`
-* Install hcat dependencies: `pip install hcat`
-* Run hcat: `conda activate hcat; hcat`
+* Install hcat and dependencies: `pip install hcat --upgrade`
+* Run hcat: `hcat`
 
 > NOTE: It is strongly recommended you follow the installation guide for correct installation!
 
@@ -70,7 +70,7 @@ This will create a command to run in the prompt. With these settings, this might
 >**NOTE** Installing pytorch with pip is known to cause issues in some systems. To ensure GPU capabilities and 
 > prevent errors, please install with the package manager `Conda`.
 
-6) Once we've installed pytorch, we can use the command line to install `hcat`. To do this, type `pip install hcat`. This command will install all
+6) Once we've installed pytorch, we can use the command line to install `hcat`. To do this, type `pip install hcat --upgrade`. This command will install all
 remaining libraries necessary to run the software into our protected sandbox environment (this may take a while). This means that the software can only be
 called from the hcat environment. 
 

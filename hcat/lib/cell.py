@@ -2,6 +2,7 @@ import torch
 from torchvision.ops.boxes import box_convert
 from typing import Tuple, Dict, Optional
 from hcat.train.transforms import _crop
+from torch import Tensor
 
 
 # DOCUMENTED
@@ -44,12 +45,12 @@ def _stat(asses: torch.Tensor, index: int) -> Dict[str, torch.Tensor]:
 
 class Cell:
     def __init__(self,
-                 image: Optional[torch.Tensor],
-                 mask: Optional[torch.Tensor],
-                 loc: torch.Tensor,
+                 image: Optional[Tensor] = None,
+                 mask: Optional[Tensor] = None,
+                 loc: Optional[Tensor] = None,
                  id: Optional[int] = None,
-                 scores: Optional[torch.Tensor] = None,
-                 boxes: Optional[torch.Tensor] = None,
+                 scores: Optional[Tensor] = None,
+                 boxes: Optional[Tensor] = None,
                  cell_type: Optional[str] = None,
                  channel_name: Optional[Tuple[str]] = ('dapi', 'gfp', 'myo7a', 'actin')):
         """
