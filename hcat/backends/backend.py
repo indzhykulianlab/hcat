@@ -65,26 +65,25 @@ class Backend(nn.Module):
     @staticmethod
     def _model_loader_path(path: str, model, device: str):
         """ Loads model from a path """
-        try:
-            model = torch.jit.script(model).to(device)
-            if path is not None:
-                checkpoint = torch.load(path)
-                if isinstance(checkpoint, dict):
-                    checkpoint = checkpoint['model_state_dict']
-                model.load_state_dict(checkpoint)
-                print('src.lib.backend._model_loader_path: model successfully loaded.')
+        # try:
+        model = model().to(device)
+        if path is not None:
+            checkpoint = torch.load(path)
+            checkpoint = checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint
+            model.load_state_dict(checkpoint)
+            print('src.lib.backend._model_loader_path: model successfully loaded.')
 
-        except RuntimeError:  # This is likely due to model weights not lining up.
-            model = torch.jit.script(model(1, 4).requires_grad_(False)).to(device)
-            if path is not None:
-                checkpoint = torch.load(path)
-                if isinstance(checkpoint, dict):
-                    checkpoint = checkpoint['model_state_dict']
-                model.load_state_dict(checkpoint)
-
-        for m in model.modules():
-            if isinstance(m, nn.BatchNorm3d):
-                m.eval()
+        # except RuntimeError:  # This is likely due to model weights not lining up.
+        #     model = torch.jit.script(model(1, 4).requires_grad_(False)).to(device)
+        #     if path is not None:
+        #         checkpoint = torch.load(path)
+        #         if isinstance(checkpoint, dict):
+        #             checkpoint = checkpoint['model_state_dict']
+        #         model.load_state_dict(checkpoint)
+        #
+        # for m in model.modules():
+        #     if isinstance(m, nn.BatchNorm3d):
+        #         m.eval()
 
         return model
 

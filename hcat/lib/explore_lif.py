@@ -660,6 +660,7 @@ class Reader(Header):
     """
 
     def __init__(self, lifFile, quick=True):
+        
         # open file and find it's size
         if isinstance(lifFile, io.IOBase):
             self.f = lifFile
@@ -818,7 +819,7 @@ class Serie(SerieHeader):
         self.f.seek(self.getOffset(**dimensionsIncrements))
         return self.f.read(self.getNbPixelsPerSlice())
 
-    def getFrame(self, T=0, channel=0, dtype=np.uint16):
+    def getFrame(self, T=0, channel=0, dtype='uint16'):
         """
         Return a numpy array (C order, thus last index is X):
          2D if XYT or XZT serie,
@@ -838,7 +839,7 @@ class Serie(SerieHeader):
             if channel == 0:
                 channel_offset += 1
             self.f.seek(self.getOffset(T=T, Z=z) + channel_offset)
-            zyx[z, ...] = np.fromfile(self.f, dtype='uint16', count=int(self.getNbPixelsPerSlice())).reshape(self.get2DShape())
+            zyx[z, ...] = np.fromfile(self.f, dtype=dtype, count=int(self.getNbPixelsPerSlice())).reshape(self.get2DShape())
 
         if zyx.min() < 0:
             raise ValueError(zyx.min() >= 0, zyx.min(), zyx.max(), zyx.dtype, type(zyx))
@@ -879,12 +880,20 @@ class Serie(SerieHeader):
             np.ndarray: 3D array shape:  (X, Y, channel_number).
         """
         n_channels = len(self.getChannels())
-        shape = list(self.get2DShape()) + [n_channels]
+        shape = [n_channels] + list(self.get2DShape())
+        print(shape)
+
+
+        print(self.getOffset(T=T))
+
         self.f.seek(self.getOffset(**dict({'T': T})))
+
         xyc = np.fromfile(
             self.f, dtype=dtype,
             count=int(self.getNbPixelsPerSlice()) * n_channels
         )
+
+        # shape = [shape[i] for i in [1,0,2]]
         xyc = xyc.reshape(shape)
         return xyc
 

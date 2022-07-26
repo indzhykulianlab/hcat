@@ -3,6 +3,7 @@ from torch import Tensor
 from typing import List, Tuple, Optional, Union, Dict
 
 import torchvision.transforms.functional
+from torchvision.transforms.functional import gaussian_blur
 
 from hcat.lib.explore_lif import Reader
 from hcat.train.transforms import _crop
@@ -11,12 +12,15 @@ import numpy as np
 import skimage.io as io
 import os.path
 
+from tqdm import trange
+
 import matplotlib.pyplot as plt
 import xml.etree.ElementTree as ET
 
 
 def graceful_exit(message):
     """ Decorator which returns a message upon failure"""
+
     def decorator(function):
         def wrapper(*args, **kwargs):
             result = None
@@ -25,7 +29,9 @@ def graceful_exit(message):
             except Exception:
                 print(message)
             return result
+
         return wrapper
+
     return decorator
 
 
@@ -98,6 +104,7 @@ def crop_to_identical_size(a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tens
     a = _crop(a, x=0, y=0, z=0, w=b.shape[-3], h=b.shape[-2], d=b.shape[-1])
     b = _crop(b, x=0, y=0, z=0, w=a.shape[-3], h=a.shape[-2], d=a.shape[-1])
     return a, b
+
 
 # ########################################################################################################################
 # #                                                       Postprocessing
@@ -235,27 +242,36 @@ def prep_dict(data_dict, device: str):
 
 
 def warn(message: str, color: str) -> None:
-    c = {'green' : '\x1b[1;32;40m',
+    c = {'green': '\x1b[1;32;40m',
          'yellow': '\x1b[1;33;40m',
-         'red'   : '\x1b[1;31;40m',
-         'norm'  : '\x1b[0m'}  # green, yellow, red, normal
+         'red': '\x1b[1;31;40m',
+         'norm': '\x1b[0m'}  # green, yellow, red, normal
 
-    print(c[color] + message + c['norm'])
+    print(c[color.lower()] + message + c['norm'])
 
 
 def get_device(verbose: Optional[bool] = False) -> str:
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    if device == 'cuda':
-        warn('CUDA: GPU successfully initialized!', color='green')
+    if verbose: print(f'[      ] Initializing Hardware Accelerator...', end='')
+    if torch.cuda.is_available():
+        device = 'cuda:0'
+        if verbose:
+            print("\r[\x1b[1;32;40m CUDA \x1b[0m]")
+    elif torch.backends.mps.is_available():
+        device = 'mps'
+        if verbose:
+            print("\r[\x1b[1;32;40m MPS  \x1b[0m]")
     else:
-        warn('WARNING: GPU not present or CUDA is not correctly intialized for GPU accelerated computation. '
-              'Analysis may be slow.', color='yellow')
+        device = 'cpu'
+        if verbose:
+            print("\r[\x1b[1;33;40m CPU  \x1b[0m]")
+            warn('WARNING: GPU not present or CUDA is not correctly initialized for GPU accelerated computation. '
+                 'Analysis may be slow.', color='yellow')
 
     return device
 
-def load(file: str,  header_name: Optional[str] = 'TileScan 1 Merged',
-         verbose: bool = False) -> Union[None, np.array]:
+
+def load(file: str, header_name: Optional[str] = 'TileScan 1 Merged',
+         verbose: bool = False, dtype: str ='uint16', ndim: int = 3) -> Union[None, np.array]:
     """
     Loads image file (*leica or *tif) and returns an np.array
 
@@ -267,9 +283,8 @@ def load(file: str,  header_name: Optional[str] = 'TileScan 1 Merged',
 
     image_base = None
 
-
     if verbose:
-        print(f'Loading: {file}...')
+        print(f'[      ] Loading {file}...', end='')
 
     if not os.path.exists(file):
         print(f'\n\x1b[1;31;40m' + f'Cannot access: \'{file}\'. No such file.' + '\x1b[0m')
@@ -279,52 +294,75 @@ def load(file: str,  header_name: Optional[str] = 'TileScan 1 Merged',
         reader = Reader(file)
         series = reader.getSeries()
         for i, header in enumerate(reader.getSeriesHeaders()):
-            if header.getName() == header_name:  ###'TileScan 1 Merged':
+            if header_name in header.getName():  ###'TileScan 1 Merged':
 
                 chosen = series[i]
-                for c in range(4):
-                    if c == 0:
-                        image_base = chosen.getXYZ(T=0, channel=c)[np.newaxis]
+                for c in trange(4, desc=f'Loading LIF Image with header: {header_name}'):
+                    if c == 0 and ndim == 3:
+                        image_base = chosen.getXYZ(T=0, channel=c, dtype=dtype)[np.newaxis]
 
                         if image_base.size * 4 > 9000 * 9000 * 40 * 4:
-                            print(f'\x1b[1;33;40m' + f'WARNING: \'{file}\' has image size of {image_base.shape} and is very large. Analysis may fail.' + '\x1b[0m')
+                            print(
+                                f'\x1b[1;33;40m' + f'WARNING: \'{file}\' has image size of {image_base.shape} and is very large. Analysis may fail.' + '\x1b[0m')
                             return None
 
                     else:
                         image_base = np.concatenate((image_base, chosen.getXYZ(T=0, channel=c)[np.newaxis]), axis=0)
-                del series, header, chosen
 
-    elif file.endswith('.tif'): # Load a tif
+            # del series, header, chosen
+
+    elif file.endswith('.tif') or file.endswith('.png') or file.endswith('.jpg'):  # Load a tif
         image_base = io.imread(file)
 
         if image_base.ndim == 4:
             image_base = image_base.transpose((-1, 1, 2, 0))
 
-        elif image_base.ndim == 3 and np.array(image_base.shape).min() > 4:  # Suppose you load a 3D image with one channel.
+        elif image_base.ndim == 3 and np.array(
+                image_base.shape).min() > 4:  # Suppose you load a 3D image with one channel.
             image_base = image_base[np.newaxis, ...]
             image_base = np.concatenate((image_base, image_base, image_base, image_base), axis=0).transpose(0, 2, 3, 1)
+
         elif image_base.ndim == 3 and image_base.shape[-1] <= 4:  # Suppose you load a 2D image! with multiple channels
-            image_base = image_base[..., [2, 3]].transpose((2, 0, 1)) # always just take the last two channels
+
+            image_base = image_base[...].transpose((2, 0, 1))  # always just take the last two channels
             # just return it...
             pass
         elif image_base.ndim == 3 and image_base.shape[0] <= 4:  # Suppose you load a 2D image! with multiple channels
             pass
         else:
-            print(f'\x1b[1;31;40m' + f'Cannot load: \'{file}\'. Unsupported number of dimmensions: {image_base.ndim}' + '\x1b[0m')
+            print(
+                f'\x1b[1;31;40m' + f'Cannot load: \'{file}\'. Unsupported number of dimmensions: {image_base.ndim}' + '\x1b[0m')
             return None
 
     else:
         print(f'\x1b[1;31;40m' + f'Cannot load: \'{file}\'. Filetype not supported.' + '\x1b[0m')
         return None
 
+    if verbose:
+        print("\r[\x1b[1;32;40m DONE \x1b[0m]")
     return image_base
 
 
-def correct_pixel_size(image: torch.Tensor,
-                       current_pixel_size: Optional[float] = None,
-                       cell_diameter: Optional[int] = None,
-                       antialias: Optional[bool] = True,
-                       verbose: Optional[bool] = False):
+def rescale_box_sizes(boxes: torch.Tensor,
+                      current_pixel_size: Optional[float] = None,
+                      cell_diameter: Optional[int] = None,
+                      ):
+    scale = 1.0
+
+    if current_pixel_size is not None:
+        scale = current_pixel_size / 288.88
+
+    elif cell_diameter is not None:
+        scale = 30 / cell_diameter
+
+    return boxes / scale
+
+
+def correct_pixel_size_image(image: torch.Tensor,
+                             current_pixel_size: Optional[float] = None,
+                             cell_diameter: Optional[int] = None,
+                             antialias: Optional[bool] = True,
+                             verbose: Optional[bool] = False):
     """
     Correct an image to new pixel size...
 
@@ -336,14 +374,15 @@ def correct_pixel_size(image: torch.Tensor,
     :return:
     """
     if cell_diameter is None and current_pixel_size is None:
-        if verbose:
-            print(f'Image was not scaled. Assuming pixel size of 28.88nm X/Y')
+        print(f'Image was not scaled. Assuming pixel size of 288.88nm X/Y')
         return image
+    else:
+        if verbose:
+            print(f'[      ] Scaling Image...', end='')
 
     if current_pixel_size is not None:
-        pixel_size = 288.88
-
-        scale = pixel_size / 288.88
+        optimal_pixel_size = 288.88
+        scale = current_pixel_size / optimal_pixel_size
         c, x, y = image.shape
         new_size = [round(x * scale), round(y * scale)]
 
@@ -359,35 +398,52 @@ def correct_pixel_size(image: torch.Tensor,
         image = torchvision.transforms.functional.resize(image, new_size, antialias=antialias)
 
     if verbose:
-        print(f'Rescaled Image to match pixel size of 288.88nm with a new shape of: {image.shape}')
+        print("\r[\x1b[1;32;40m DONE \x1b[0m]")
 
     return image
 
 
-def get_dtype_offset(dtype: str = 'uint16') -> int:
+def get_dtype_offset(dtype: str = 'uint16', image_max=None) -> int:
     """ get dtype from string """
-    if dtype == 'uint16':
-        scale = 2 ** 16
-    elif dtype == 'uint8':
-        scale = 2 ** 8
-    elif dtype == 'uint12':  # FM143 usually is this...
-        scale = 2 ** 12
+
+    encoding = {
+        'uint16': 2 ** 16,
+        'uint8': 2 ** 8,
+        'uint12': 2 ** 12,
+        'float64': 1,
+    }
+    dtype = str(dtype)
+
+    if image_max is not None and dtype=='uint16':
+        dtype = 'uint12' if 2**12 + 1 > image_max else 'uint16'
+
+    if dtype in encoding:
+        scale = encoding[dtype]
+
     else:
-        print(f'\x1b[1;31;40m' + f'ERROR: Unsupported dtype: {dtype}. Currently support: (uint8, uint12, uint16)' + '\x1b[0m')
+        print(
+            f'\x1b[1;31;40m' + f'ERROR: Unsupported dtype: {dtype}. Currently support: {[k for k in encoding]}' + '\x1b[0m')
         scale = None
+        if image_max:
+            print(f'Appropriate Scale Factor inferred from image maximum: {image_max}')
+            if image_max <= 256:
+                scale = 256
+            else:
+                scale = image_max
     return scale
 
 
-def cochlea_to_xml(cochlea) -> None:
+def cochlea_to_xml(cochlea, filename=None) -> None:
     # Xml header and root
-    filename = cochlea.filename
-    path = cochlea.path # has filename appended to end
+    if filename is None:
+        filename = cochlea.filename
+
+    path = cochlea.path  # has filename appended to end
     folder = os.path.split(filename)[0]
     folder = os.path.split(folder)[-1] if len(folder) != 0 else os.path.split(os.getcwd())[1]
 
-    _, height, width= cochlea.im_shape
+    _, height, width = cochlea.im_shape
     depth = 1
-
 
     root = ET.Element('annotation')
     ET.SubElement(root, 'folder').text = folder
@@ -400,7 +456,6 @@ def cochlea_to_xml(cochlea) -> None:
     ET.SubElement(size, 'height').text = str(height)
     ET.SubElement(size, 'depth').text = str(depth)
     ET.SubElement(root, 'segmented').text = '0'
-
 
     for c in cochlea.cells:
         x0, y0, x1, y1 = c.boxes
@@ -418,7 +473,54 @@ def cochlea_to_xml(cochlea) -> None:
 
     tree = ET.ElementTree(root)
     filename = os.path.splitext(cochlea.path)[0]
-    tree.write(filename + '_predicted.xml')
+    tree.write(filename + '.xml')
+
+
+def normalize_image(image: Tensor, normalize: bool, verbose: Optional[bool] = False) -> Tensor:
+    if verbose and normalize:
+        print(f'[      ] Normalizing to maximum brightness...', end='')
+    for c in range(image.shape[0]):
+        max_pixel = gaussian_blur(image[c, ...].unsqueeze(0), kernel_size=[7, 7], sigma=0.5).max()
+        image[c, ...] = image[c, ...].div(max_pixel + 1e-16).clamp(0, 1) if max_pixel != 0 else image[
+            c, ...]
+    if verbose and normalize:
+        print("\r[\x1b[1;32;40m DONE \x1b[0m]")
+
+    return image
+
+def make_rgb(image: Tensor) -> Tensor:
+    _, x, y = image.shape
+    if image.shape[0] == 2:
+        image: Tensor = torch.cat((torch.zeros((1, x, y), device=image.device), image), dim=0)
+
+    return image[0:3, ...] #ALWAYS choose
+
+
+def image_to_float(image: Union[np.ndarray, Tensor], scale: int, verbose: Optional[bool] = False) -> Tensor:
+    if verbose:
+        print(f'[      ] Converting Image to Float... ', end='')
+
+    if isinstance(image, np.ndarray):
+        image = torch.from_numpy(image.astype(np.uint16) / scale).to(torch.float32)
+    else:
+        image = image.div(scale).to(torch.float32)
+
+    if verbose:
+        print("\r[\x1b[1;32;40m DONE \x1b[0m]")
+
+    return image
+
+def save_image_as_png(image: Tensor, filename: str, verbose: Optional[bool] = False) -> None:
+    if verbose:
+        print(f'[      ] Saving as {filename[:-4:]}.png...', end='')
+
+    png = image.cpu().permute(1, 2, 0).mul(255).int().numpy().clip(0, 255).astype(np.uint8)
+    io.imsave(filename[:-4:] + '.png', png[:, :, [2, 0, 1]])
+    io.imsave(filename[:-4:] + '_scaled.tif', png[:, :, [2, 0, 1]])
+
+    del png
+    if verbose:
+        print("\r[\x1b[1;32;40m DONE \x1b[0m]")
 
 
 ########################################################################################################################
@@ -434,6 +536,14 @@ def plot_embedding(embedding: torch.Tensor, centroids: torch.Tensor) -> None:
     plt.plot(centroids[0, :, 1].cpu().numpy(), centroids[0, :, 0].cpu().numpy(), 'ro')
 
     plt.show()
+
+def make_embedding_image(embedding):
+    x = embedding.detach().cpu().numpy()[0, 0, ...].flatten()
+    y = embedding.detach().cpu().numpy()[0, 1, ...].flatten()
+    histogram,_,_ = np.histogram2d(x, y, bins=(embedding.shape[2], embedding.shape[3]))
+    return torch.from_numpy(histogram)
+
+
 
 if __name__ == "__main__":
     cochlea = torch.load('test.cochlea')

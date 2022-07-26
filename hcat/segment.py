@@ -1,23 +1,23 @@
-import hcat
-import hcat.lib.utils as utils
-import hcat.lib.functional as functional
-from hcat.lib.utils import calculate_indexes, remove_edge_cells, remove_wrong_sized_cells, graceful_exit
-from hcat.lib.cell import Cell
-from hcat.lib.cochlea import Cochlea
-from hcat.backends.spatial_embedding import SpatialEmbedding
-from hcat.backends.unet_and_watershed import UNetWatershed
+import gc
+import os.path
+from itertools import product
+from typing import Optional, List
 
+import numpy as np
+import psutil
 import torch
 from torch import Tensor
 from tqdm import tqdm
-from itertools import product
-import numpy as np
-from hcat.lib.explore_lif import get_xml
 
-import os.path
-import gc
-import psutil
-from typing import Optional, List, Dict
+import hcat
+import hcat.lib.functional as functional
+import hcat.lib.utils as utils
+from hcat.backends.spatial_embedding import SpatialEmbedding
+from hcat.backends.unet_and_watershed import UNetWatershed
+from hcat.lib.cell import Cell
+from hcat.lib.cochlea import Cochlea
+from hcat.lib.explore_lif import get_xml
+from hcat.lib.utils import calculate_indexes, remove_edge_cells, remove_wrong_sized_cells
 
 
 # DOCUMENTED
@@ -88,8 +88,8 @@ def _segment(f: str, channel: int, intensity_reject_threshold: float,
         c, x, y, z = image_base.shape
         out_img = torch.zeros((1, x, y, z), dtype=torch.long)  # (1, X, Y, Z)
 
-        x_ind: List[List[int]] = calculate_indexes(15, 255, x, x)  # [[0, 255], [30, 285], ...]
-        y_ind: List[List[int]] = calculate_indexes(15, 255, y, y)  # [[0, 255], [30, 285], ...]
+        x_ind: List[List[int]] = calculate_indexes(15, 512, x, x)  # [[0, 255], [30, 285], ...]
+        y_ind: List[List[int]] = calculate_indexes(15, 512, y, y)  # [[0, 255], [30, 285], ...]
         total: int = len(x_ind) * len(y_ind)
 
         for (x, y) in tqdm(product(x_ind, y_ind), total=total, desc='Segmenting: '):
@@ -97,7 +97,7 @@ def _segment(f: str, channel: int, intensity_reject_threshold: float,
             # Load and prepare image for ML model evaluation
             image: np.array = image_base[:, x[0]:x[1], y[0]:y[1]].astype(np.float)
             image: Tensor = torch.from_numpy(image).float().div(scale).unsqueeze(0)
-            image: Tensor = image.div(0.5) if image.min() < 0 else image.sub(0.5).div(0.5)  # signed or unsigned?
+            # image: Tensor = image.div(0.5) if image.min() < 0 else image.sub(0.5).div(0.5)  # signed or unsigned?
 
             # which backend do we use?
             out: Tensor = backend(image.to(device)) if unet else backend(image[:, [channel], ...].to(device))
@@ -113,12 +113,11 @@ def _segment(f: str, channel: int, intensity_reject_threshold: float,
             if out.shape[1] == 0:
                 continue
 
-
             value, out = out.max(1)
             out[value < 0.25] = 0
 
             # postprocess
-            out: Tensor = remove_wrong_sized_cells(out) if not no_post else out
+            # out: Tensor = remove_wrong_sized_cells(out) if not no_post else out
 
             # Remove cells on the edge for proper merging
             out: Tensor = remove_edge_cells(out).cpu()
@@ -199,13 +198,13 @@ def _segment(f: str, channel: int, intensity_reject_threshold: float,
         if figure:
             c.make_fig(os.path.splitext(f)[0] + '.pdf')
 
-        # c.write_csv(os.path.splitext(f)[0] + '.csv')
+        c.write_csv(os.path.splitext(f)[0] + '.csv')
         c.render_mask(os.path.splitext(f)[0] + '_mask.tif')
         print('')
         return c
 
 
-@graceful_exit('\x1b[1;31;40m' + 'ERROR: Could not load segmentation backend.' + '\x1b[0m')
+# @graceful_exit('\x1b[1;31;40m' + 'ERROR: Could not load segmentation backend.' + '\x1b[0m')
 def _get_backend(unet: bool, cellpose: bool, device: str):
     """ Get the appropriate Backend """
     if unet and not cellpose:
@@ -216,10 +215,9 @@ def _get_backend(unet: bool, cellpose: bool, device: str):
                                                  'fasterrcnn_Oct14_06:05.pth',
                                 device=device).requires_grad_(False)
     elif not unet and not cellpose:
-        backend = SpatialEmbedding(model_loc='/media/DataStorage/Dropbox (Partners HealthCare)/HairCellInstance/'
-                                             'models_lts/spatial_embedding.trch',
-                                   sigma=torch.tensor([0.2, 0.2, 0.2]),
-                                   scale=25,
+        backend = SpatialEmbedding(model_loc='/home/chris/Dropbox (Partners HealthCare)/trainHairCellSegmentation/models/May17_10-35-49_CHRISUBUNTU_state_dict.trch',
+                                   sigma=torch.tensor([5,5,3]),
+                                   scale=torch.tensor([60, 60, 25]),
                                    device=device).requires_grad_(False)
     elif cellpose and not unet:
         from hcat.backends.cellpose import Cellpose  # cellpose announces it makes a log file

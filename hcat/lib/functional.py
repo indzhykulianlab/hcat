@@ -46,20 +46,14 @@ class VectorToEmbedding(nn.Module):
         :param vector: [B, 3=[x,y,z], X, Y, Z] prediction vector from spatial embedding model
         :return: [B, 3=[x,y,z], X, Y, Z] projected spatial embedding vector
         """
-        if vector.ndim != 5: raise ShapeError('Expected input tensor ndim == 5')
+        if vector.ndim != 5: raise RuntimeError('Expected input tensor ndim == 5')
 
-        # apply the vec to the mesh.
-        # use the embedding as indexes to apply the vector N times.
         num: Tensor = self.scale.float()
 
-        x_factor = 1 / num[0]
-        y_factor = 1 / num[1]
-        z_factor = 1 / num[2]
-
         with torch.no_grad():
-            _x = torch.linspace(0, x_factor * vector.shape[2], vector.shape[2], device=vector.device)
-            _y = torch.linspace(0, y_factor * vector.shape[3], vector.shape[3], device=vector.device)
-            _z = torch.linspace(0, z_factor * vector.shape[4], vector.shape[4], device=vector.device)
+            _x = torch.linspace(0, vector.shape[2] - 1, vector.shape[2], device=vector.device)
+            _y = torch.linspace(0, vector.shape[3] - 1, vector.shape[3], device=vector.device)
+            _z = torch.linspace(0, vector.shape[4] - 1, vector.shape[4], device=vector.device)
 
             xv, yv, zv = torch.meshgrid([_x, _y, _z])
 
@@ -67,24 +61,30 @@ class VectorToEmbedding(nn.Module):
                               yv.unsqueeze(0).unsqueeze(0),
                               zv.unsqueeze(0).unsqueeze(0)), dim=1)
 
-        mesh = mesh + vector if self.training else mesh.add_(vector)
+        # Apply the mesh grid to the vector! We always do this at least once!
+        vector = vector.mul(num.view(1, 3, 1, 1, 1))
+        mesh = mesh + vector
 
         for _ in range(n - 1):  # Only executes if n > 1
-            # convert to index.
-            index = (mesh * self.scale[0]).round()
+            index = mesh.round()
             b, c, x, y, z = index.shape
             for i, k in enumerate([x, y, z]):
                 index[:, i, ...] = torch.clamp(index[:, i, ...], 0, k)
 
             index = (index[:, [0], ...] * y * z) + (index[:, [1], ...] * z) + (index[:, [2], ...])
+            out_of_bounds = torch.logical_and(index > x * y * z - 1, index < 0)
+            index[out_of_bounds] = 0
+
             # x_ind  = index[:,0,...].flatten()
             # y_ind  = index[:,1,...].flatten()
             # z_ind  = index[:,2,...].flatten()
 
             index = index.clamp(0, x * y * z - 1).long()
             # mesh = mesh + vector.flatten(start_dim=2)[]
-            for i in range(c):
+            for i, shape in enumerate((x,y,z)):
                 mesh[:, [i], ...] = mesh[:, [i], ...] + vector[:, [i], ...].take(index)
+                out_of_bounds = torch.logical_or(mesh[:, [i], ...] > shape, mesh < 0)
+                mesh[out_of_bounds] = -1
 
         return mesh
 
@@ -137,7 +137,7 @@ class EmbeddingToProbability(nn.Module):
 
         # Sometimes centroids might be in pixel coords instead of scaled.
         # If so, scale by num (usually 512)
-        centroids = centroids / num if centroids.max().gt(5) else centroids
+        # centroids = centroids / num if centroids.max().gt(5) else centroids
 
         b, _, x, y, z = embedding.shape
         _, n, _ = centroids.shape
@@ -154,7 +154,11 @@ class EmbeddingToProbability(nn.Module):
 
         # A bit scuffed but should optimize well in torchscript
         for i in range(n):
-            prob_list += [torch.exp((embedding - centroids[:, i, :].view(newshape)).pow(2).div(sigma).sum(dim=1)).squeeze(1)]
+            prob_list += [torch.exp(
+                (embedding - centroids[:, i, :].view(newshape)).pow(2)
+                                                               .div(sigma)
+                                                               .sum(dim=1)
+            ).squeeze(1)]
         prob = torch.stack(prob_list, dim=1)
 
         # else:  # If in Eval Mode - do a bunch of inplace operations for speed and memory efficiency
@@ -211,16 +215,17 @@ def learnable_centroid(embedding: Tensor, mask: Tensor, method: str = 'mean',
 
 
 class EstimateCentroids(nn.Module):
-    def __init__(self, downsample: int = 1,
+    def __init__(self,
+                 scale: Tensor,
+                 downsample: int = 2,
                  n_erode: int = 1,
-                 eps: float = 1,
-                 min_samples: int = 5,
-                 scale: Tensor = torch.tensor([25]),
-                 device='cuda'):
+                 eps: float = 0.5,
+                 min_samples: int = 10,
+                 device='cpu'):
         """
         Estimates centroids of objects in a spatial embedding matrix.
 
-        :param downsample: factor by which to downsample embedding matrix, higher numbers increase computational speed.
+        :param downsample: factor by which to downsample embedding marix, higher numbers increase computational speed.
         :param n_erode: Erodes probability map, higher numbers prefentiall select voxels near object centers.
         :param eps: tuning parameter for DBSCAN
         :param min_samples: minimum number of voxels for an image to be detected
@@ -257,10 +262,13 @@ class EstimateCentroids(nn.Module):
         :param probability_map: [B, C=1, X, Y, Z] predicted object probability mask
         :return: [B, N, K=3] Predicted centroids
         """
-        num = self.scale
+
+
+        # num = self.scale
 
         device = embedding.device
         embedding = embedding.squeeze(0).reshape((3, -1)).clone()
+
         binary_erosion = erosion(device=device)
 
         # First Step is to prune number of viable points
@@ -271,24 +279,33 @@ class EstimateCentroids(nn.Module):
             if probability_map.shape[0] != 1: raise ShapeError(f'Batch size should be 1, not {probability_map.shape}')
             if probability_map.shape[1] != 1: raise ShapeError(f'Color size should be 1, not {probability_map.shape}')
 
-            pm = probability_map.squeeze(0).gt(0.5).float()  # Needs 4 channel input. Remove Batch.
+            pm = probability_map.squeeze(0).gt(0.8).float()  # Needs 4 channel input. Remove Batch.
             for i in range(self.n_erode):
                 pm = binary_erosion(pm)
 
-            embedding[:, torch.logical_not(pm.squeeze(0).gt(0.5).view(-1))] = -10
+            embedding = embedding[:, pm.squeeze(0).gt(0.5).view(-1)]
 
-        x = embedding[0, :]
-        y = embedding[1, :]
-        z = embedding[2, :]
+        # x = embedding[0, :]
+        # y = embedding[1, :]
+        # z = embedding[2, :]
+        #
+        # ind_x = x >= 0
+        # ind_y = y >= 0
+        # ind_z = z >= 0
+        # ind = torch.logical_and(ind_x, ind_y)
+        # ind = torch.logical_and(ind, ind_z)
+        # embedding = embedding[:, ind]
 
-        ind_x = x > -2
-        ind_y = y > -2
-        ind_z = z > -2
-        ind = torch.logical_or(ind_x, ind_y)
-        ind = torch.logical_or(ind, ind_z)
-        embedding = embedding[:, ind]
+        # Downsample the embeddings if there are too many points...
+        embedding = embedding[:, 0:-1:self.downsample]
 
-        embedding = embedding[:, 0:-1:self.downsample].mul(num).round().detach().cpu()
+        # Remove obviously wrong embeddings...
+        ind = torch.logical_not(embedding.le(1).sum(0).gt(1))  # any x,y,z pair with a negativ enumber is bad
+        embedding = embedding[:, ind].round().cpu().detach()
+
+
+        if embedding.numel() == 0:  # nothing detected
+            return torch.empty((1, 0, 3), device=device)
 
         if embedding.shape[-1] > 3_000_000:
             raise RuntimeError(f'Unsuported number of samples. {embedding.shape[-1]} after pruning, 3,000,000 maximum.')
@@ -300,6 +317,7 @@ class EstimateCentroids(nn.Module):
         labels = torch.from_numpy(db.labels_)
 
         unique, counts = torch.unique(labels, return_counts=True)
+
         centroids = torch.zeros((1, 3, unique.shape[0]), device=device)  # [B, C=3, N]
         scores = torch.zeros((1, 1, unique.shape[0]), device=device)  # [B, C=1, N]
 
@@ -310,7 +328,17 @@ class EstimateCentroids(nn.Module):
             centroids[0, :, i] = embedding[:, labels == u].mean(axis=-1)
             scores[0, 0, i] = s
 
-        if centroids.sum() == 0:  # nothing detected
+        nonzero = torch.logical_not(centroids[0, [0,1], :].le(10).sum(0).gt(0).bool())
+        centroids = centroids[:, :, nonzero]
+        scores = scores[..., nonzero]
+
+        nonzero = torch.logical_not(centroids[0, [2], :].le(1).sum(0).gt(0).bool())
+        centroids = centroids[:, :, nonzero]
+        scores = scores[..., nonzero]
+
+        # assert centroids.min() >= 1, f'{nonzero}, {centroids}'
+
+        if centroids.numel() == 0:  # nothing detected
             return torch.empty((1, 0, 3), device=device)
 
         # Works best with non maximum supression
@@ -454,7 +482,6 @@ class PredictCurvature:
                 except Exception:
                     curvature, distance, apex = None, None, None
 
-
         elif self.method == 'mask':
             _, x, y, _ = image.shape
             mask = torch.zeros((1, x, y, 1))
@@ -462,8 +489,10 @@ class PredictCurvature:
                 x0, y0, x1, y1 = torch.round(c.boxes).int()
                 mask[:, y0:y1, x0:x1, :] = 1
             curvature, distance, apex = self.fit(mask, 'mask', diagnostic=False)
+
         elif self.method == 'maxproject':
             curvature, distance, apex = self.fit(image, 'maxproject', diagnostic=False)
+
         else:
             raise ValueError(f'Unknown method: {self.method}')
 

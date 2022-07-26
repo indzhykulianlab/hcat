@@ -16,10 +16,10 @@ from typing import Dict, List, Union
 from skimage.morphology import ball
 import xml
 from torch.utils.data import Dataset
-import src.lib.utils
+import hcat.lib.utils
 from typing import Callable
 
-import src.train.transforms as t
+import hcat.train.transforms as t
 
 
 class dataset(DataLoader):
@@ -157,6 +157,7 @@ class em_dataset(DataLoader):
 
         # Find only files
         files = glob.glob(os.path.join(path, '*.labels.tif'))
+        print(files)
 
         self.mask = []
         self.image = []
@@ -178,7 +179,6 @@ class em_dataset(DataLoader):
                 image = image.transpose(0, -1).transpose(1,2).squeeze().unsqueeze(0)
 
             mask = torch.from_numpy(io.imread(f)).transpose(0, 2).unsqueeze(0)
-
 
             self.mask.append(mask.float())
             self.image.append(image.float())
@@ -294,7 +294,6 @@ class detection_dataset(Dataset):
         self.dpd = duplicate_poor_data
         self.simple_class = simple_class
         self.pad_size = pad_size
-
         self.device = 'cuda:0'
 
         path: List[str] = [path] if isinstance(path, str) else path
@@ -313,7 +312,7 @@ class detection_dataset(Dataset):
 
             # [c, X, Y] -> [c, x, y, z=1]
             image: np.array = io.imread(image_path)
-            scale: int = src.lib.utils.get_dtype_offset(image.dtype)
+            scale: int = hcat.lib.utils.get_dtype_offset(image.dtype)
             image: Tensor = TF.pad(torch.from_numpy(image / scale), self.pad_size).unsqueeze(-1)
 
             if image.max() < 0.2:
@@ -355,9 +354,8 @@ class detection_dataset(Dataset):
                 elif s == 'IHC':
                     class_labels[i] = 4
                 else:
-                    print(class_labels)
-                    print(bbox_loc)
-                    raise ValueError('Unidentified Label in XML file of ' + f)
+                    class_labels[i] = 999
+                    print('Unidentified Label in XML file of ' + f, '\n Assigning Value 999')
 
             class_labels = torch.tensor(class_labels)
 
@@ -367,8 +365,19 @@ class detection_dataset(Dataset):
                 class_labels[class_labels == 3] = 1  # OHC3 -> OHC
                 class_labels[class_labels == 4] = 2  # IHC
 
-            self.boxes.append(torch.tensor(bbox_loc).to(self.device) + self.pad_size)
-            self.labels.append(class_labels.to(self.device))
+            b = torch.tensor(bbox_loc).to(self.device) + self.pad_size
+            c = class_labels.to(self.device)
+            b = b[c < 10, :]
+            c = c[c < 10]
+
+            # ind = b[:, 0:2] < b[:, 2:]
+            # ind = torch.logical_and(ind[:,0], ind[:,1])
+            #
+            # b = b[ind, :]
+            # c = c[ind]
+
+            self.boxes.append(b)
+            self.labels.append(c)
 
         print(f'TOTAL DATASET SIZE: {len(self.files)}')
 
@@ -450,6 +459,14 @@ class detection_dataset(Dataset):
         else:
             warnings.warn('Stepping when random_ind is set to false has no effect.')
 
+    def cuda(self):
+        self.image = [x.cuda() for x in self.image]
+        self.mask = [x.cuda() for x in self.mask]
+        self.centroids = [x.cuda() for x in self.centroids]
+        self.boxes = [x.cuda() for x in self.boxes]
+        self.labels = [x.cuda() for x in self.labels]
+
+        return self
 
 @torch.jit.script
 def colormask_to_torch_mask(colormask: torch.Tensor) -> torch.Tensor:

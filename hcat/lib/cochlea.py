@@ -156,7 +156,7 @@ class Cochlea:
 
     @animal_id.setter
     def animal_id(self, filename):
-        match = re.search(' m\d ', filename)
+        match = re.search(' m\d ', filename) if filename else None
         self._animal_id = match[0] if match is not None else None
 
     @property
@@ -166,7 +166,7 @@ class Cochlea:
     @litter.setter
     def litter(self, filename):
         test_string = 'Oct 22 AAV2-PHP.B-CMV Olga L17 m1 G200 L0.25.lif'
-        match = re.search(' L\d\d?\d?', filename)
+        match = re.search(' L\d\d?\d?', filename) if filename else None
         self._litter = match[0] if match is not None else None
 
     @property
@@ -175,7 +175,7 @@ class Cochlea:
 
     @gain.setter
     def gain(self, filename):
-        match = re.search('G\d\d?\d?', filename)
+        match = re.search('G\d\d?\d?', filename) if filename else None
         self._gain = match[0] if match is not None else None
 
     @property
@@ -184,7 +184,7 @@ class Cochlea:
 
     @laser.setter
     def laser(self, filename):
-        match = re.search('L0.\d?\d?\d?', filename)
+        match = re.search('L0.\d?\d?\d?', filename) if filename else None
         self._laser = match[0] if match is not None else None
 
     ####################################################################################################################
@@ -539,8 +539,7 @@ class Cochlea:
         :return:
         """
         print('Rendering Figure...', end='')
-        image = image.mul(0.5).add(0.5).cpu() if image.min() < 0 else image.cpu()
-        factor = 1.8
+        image = image.cpu() if image.min() < 0 else image.cpu()
 
         while image.shape[0] < 3:
             zeromat = torch.zeros((1, image.shape[1], image.shape[2]))
@@ -549,7 +548,6 @@ class Cochlea:
         # image = torchvision.transforms.functional.adjust_brightness(image, factor)
         # image = torchvision.transforms.functional.adjust_contrast(image, factor*0.65)
 
-        image[0, ...] = image[0, ...] * 0
         _, x, y = image.shape
         ratio = x / y
         fig = plt.figure(figsize=(y / 200, x / 200))
@@ -559,7 +557,7 @@ class Cochlea:
 
         blue = '#2b75ff'
 
-        ax.imshow(image[[2, 0, 1], ...].numpy().transpose((1, 2, 0)), cmap='bone')
+        ax.imshow(image.numpy().transpose((1, 2, 0)))
         #
         # Loop over all cells and plot them on an image
         if self.curvature is not None:
