@@ -11,12 +11,15 @@ investigating tonotopic and morphological trends.
 ## Quickstart Guide
 #### Installation
 * Install [Anaconda](https://www.anaconda.com/)
-* In a terminal or anaconda prompt, copy and paste: `conda create -yn hcat; conda activate hcat`
-* Install pytorch using conda following the instructions of the pytorch website: [Pytorch](https://pytorch.org/get-started/locally/)
+* In a terminal or anaconda prompt, copy and paste: `conda create -yn hcat python=3.9'
+* Then copy and paste: t 'conda activate hcat`
+* Install pytorch for CPU ONLY: `conda install pytorch torchvision torchaudio cpuonly -c pytorch`
 * Install hcat dependencies: `pip install hcat`
 * Run hcat: `conda activate hcat; hcat`
 
-> It is strongly recommended you follow the installation guide for correct installation!
+> NOTE: It is strongly recommended you follow the installation guide for correct installation!
+
+> NOTE: Follow the detailed installation guide for instructions on how to enable GPU acceleration 
 
 Detection Gui:
 * Run in terminal: `hcat`
