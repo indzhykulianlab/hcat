@@ -12,7 +12,7 @@ investigating tonotopic and morphological trends.
 #### Installation
 * Install [Anaconda](https://www.anaconda.com/)
 * In a terminal or anaconda prompt, copy and paste: `conda create -yn hcat python=3.9'
-* Then copy and paste: t 'conda activate hcat`
+* Then copy and paste: `conda activate hcat`
 * Install pytorch for CPU ONLY: `conda install pytorch torchvision torchaudio cpuonly -c pytorch`
 * Install hcat dependencies: `pip install hcat`
 * Run hcat: `conda activate hcat; hcat`
