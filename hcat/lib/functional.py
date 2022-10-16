@@ -37,7 +37,7 @@ import matplotlib.pyplot as plt
 def _iou(a: Tensor, b: Tensor) -> Tensor:
     """
     Takes two identically sized tensors and computes IOU of the Masks
-    Assume a, b are boolean tensors with values 0 and 1
+    Assume a, b are of the same shape and boolean tensors with values 0 and 1
 
     :param a: Tensor - Bool
     :param b: Tensor - Bool
@@ -98,7 +98,6 @@ class nms(nn.Module):
         return ind > 0
 
 
-# @graceful_exit('\x1b[1;31;40m' + 'ERROR: Could not calculate cochlear length.' + '\x1b[0m')
 class PredictCurvature:
     def __init__(self,
                  voxel_dim: Optional[Tuple[float, float, float]] =(.28888, .28888, .2888 * 3), # um
@@ -137,7 +136,7 @@ class PredictCurvature:
         Tries various methods to predict curvature.
 
         If user provides a csv of curvature default to this.
-        In order -> CSV, Myo7a, Mask
+        In order -> User provided CSV, Myo7a, Mask
 
         :param image: torch.Tensor image of a complete cochlea in one contiguous piece.
         :param mask: A binary mask by which to fit a nonlinear curve through

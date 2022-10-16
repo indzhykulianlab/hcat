@@ -79,7 +79,16 @@ class Backend(nn.Module):
 
     @staticmethod
     def _model_loader_url(url: str, model, device: str):
-        """ loads model from url """
+        """
+        Loads a model from a url if it doesnt exist on the path.
+
+        :param url: str
+        :param model: nn.Module
+        :param device: device to put the model on.
+        :return:
+        """
+
+
         path = os.path.join(hcat.__path__[0], 'spatial_embedding.trch')
 
         if not os.path.exists(path):
@@ -100,6 +109,7 @@ class Backend(nn.Module):
 
     @staticmethod
     def _is_url(input: str):
+        """ returns true if the input string is a url """
         regex = re.compile(
             r'^(?:http|ftp)s?://'  # http:// or https://
             r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain...
@@ -111,30 +121,3 @@ class Backend(nn.Module):
         # Return true if its a url
         return re.match(regex, input) is not None
 
-    @staticmethod
-    def _colormask_to_mask(mask: Tensor) -> Tensor:
-        """
-        Converts a integer mask from the watershed algorithm to a 4d matrix where tensor.shape[1] is the number of
-        unique cells in the mask.
-
-        :param mask: [B, 1, X, Y, Z]  where each integer is a unique cell
-        :return: [B, N, X, Y, Z] where each N is a single cell
-        """
-        b, _, x, y, z = mask.shape
-        n = len(mask.unique()) - 1  # subtract 1 because background is included
-        n = n if n > 0 else 0
-
-        out: Tensor = torch.zeros((b, n, x, y, z))
-        unique = mask.unique()
-        unique = unique[unique != 0]
-
-        for i, u in enumerate(unique):
-            if u == 0:
-                continue
-
-            out[0, i, ...] = (mask[0, 0, ...] == u).float()
-
-        return out
-
-def pooop(x: Tensor) -> Tensor:
-    return x

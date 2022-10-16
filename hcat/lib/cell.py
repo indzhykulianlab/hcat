@@ -1,7 +1,7 @@
 import torch
 from torchvision.ops.boxes import box_convert
 from typing import Tuple, Dict, Optional
-from hcat.train.transforms import _crop
+from hcat.train.utils import _crop
 from torch import Tensor
 
 
@@ -11,7 +11,6 @@ from torch import Tensor
 def crop_to_identical_size(a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Crops Tensor a to the shape of Tensor b, then crops Tensor b to the shape of Tensor a.
-
 
     :param a: input 1
     :param b: input 2
@@ -131,13 +130,11 @@ class Cell:
 
         Example:
         --------
-
         >>> from hcat.lib.cell import Cell
         >>> from hcat.lib.functional import PredictCurvature
         >>> import torch
         >>>
         >>> cells = torch.load('array_of_cells.trch')
-        >>> masks = torch.load('predicted_segmentation_mask.trch') # torch.shape = [C=1, X, Y, Z]
         >>> curvature, distance, apex = PredictCurvature()(masks)
         >>> for c in cells:
         >>>     c.calculate_frequency(curvature, distance)

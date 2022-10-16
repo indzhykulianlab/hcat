@@ -1,12 +1,14 @@
 import torch
 from torch import Tensor
 from typing import List, Tuple, Optional, Union, Dict
+from numbers import Number
 
 import torchvision.transforms.functional
 from torchvision.transforms.functional import gaussian_blur
 
 from hcat.lib.explore_lif import Reader
 from hcat.train.transforms import _crop
+from hcat.lib.cochlea import Cochlea
 
 import numpy as np
 import skimage.io as io
@@ -106,69 +108,6 @@ def crop_to_identical_size(a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tens
     return a, b
 
 
-# ########################################################################################################################
-# #                                                       Postprocessing
-# ########################################################################################################################
-
-# @graceful_exit('\x1b[1;31;40m' + 'ERROR: Could not remove edge cells.' + '\x1b[0m')
-@torch.jit.script
-def remove_edge_cells(mask: torch.Tensor) -> torch.Tensor:
-    """
-    Removes cells touching the border
-
-    :param mask: (B, X, Y, Z)
-    :return: mask (B, X, Y, Z)
-    """
-
-    if mask.ndim != 4: raise RuntimeError('input.ndim != 4')
-
-    # Mask is empty, nothing to do.
-    if mask.max() == 0:
-        return mask
-
-    left = torch.unique(mask[:, 0, :, :])
-    right = torch.unique(mask[:, -1, :, :])
-    top = torch.unique(mask[:, :, 0, :])
-    bottom = torch.unique(mask[:, :, -1, :])
-
-    cells = torch.unique(torch.cat((left, right, top, bottom)))
-
-    for c in cells:
-        if c == 0:
-            continue
-        mask[mask == c] = 0
-
-    return mask
-
-
-# @graceful_exit('\x1b[1;31;40m' + 'ERROR: Could not remove improperly sized cells.' + '\x1b[0m')
-@torch.jit.script
-def remove_wrong_sized_cells(mask: torch.Tensor) -> torch.Tensor:
-    """
-    Removes cells with outlandish volumes. These have to be wrong.
-
-    .. warning:
-       Will not raise an error upon failure, instead returns None and prints to standard out
-
-    :param mask: [B, C=1, X, Y, Z] int torch.Tensor: cell segmentation mask where each cell has a unique cell id
-    :return:
-    """
-    unique = torch.unique(mask)
-    unique = unique[unique.nonzero()]
-
-    for u in unique:
-        if (mask == u).sum() < 4000:
-            mask[mask == u] = 0
-        elif (mask == u).sum() > 30000:
-            mask[mask == u] = 0
-    return mask
-
-
-# ########################################################################################################################
-# #                                                       U Net Specific
-# ########################################################################################################################
-
-
 def pad_image_with_reflections(image: torch.Tensor, pad_size: Tuple[int] = (30, 30, 6)) -> torch.Tensor:
     """
     Pads image according to Unet spec
@@ -179,6 +118,8 @@ def pad_image_with_reflections(image: torch.Tensor, pad_size: Tuple[int] = (30, 
     :param pad_size:
     :return:
     """
+    raise DeprecationWarning('This should not be used. Will be removed')
+
     if not isinstance(image, torch.Tensor):
         raise TypeError(f'Expected image to be of type torch.tensor not {type(image)}')
     for pad in pad_size:
@@ -220,6 +161,7 @@ def pad_image_with_reflections(image: torch.Tensor, pad_size: Tuple[int] = (30, 
 ########################################################################################################################
 
 def prep_dict(data_dict, device: str):
+    """ basically a colate function for dataloader """
     if isinstance(data_dict, dict):
         images = data_dict['image'].to(device).float()
         data_dict['boxes'] = data_dict['boxes']
@@ -239,6 +181,7 @@ def prep_dict(data_dict, device: str):
 
 
 def warn(message: str, color: str) -> None:
+    """ utility function to send a warning of a certian color to std out """
     c = {'green': '\x1b[1;32;40m',
          'yellow': '\x1b[1;33;40m',
          'red': '\x1b[1;31;40m',
@@ -248,6 +191,15 @@ def warn(message: str, color: str) -> None:
 
 
 def get_device(verbose: Optional[bool] = False) -> str:
+    """
+    Returns the optimal hardware accelerator for HCAT detection analysis.
+    Currently supported devices are: cuda (Nvidia GPU), mps (Macbook M1 GPU), or CPU.
+    When multiple GPU's are available, always defaults to device 0.
+
+
+    :param verbose: prints operation to standard out
+    :return: string representation of device
+    """
     if verbose: print(f'[      ] Initializing Hardware Accelerator...', end='')
     if torch.cuda.is_available():
         device = 'cuda:0'
@@ -274,7 +226,9 @@ def load(file: str, header_name: Optional[str] = 'TileScan 1 Merged',
 
     :param file: str path to the file
     :param header_name: Optional[str] header name of lif. Does nothing image file is a tif
-    :param verbose: bool print status of image loading to standard out.
+    :param verbose: prints Operation to standard out
+    :param dtype: data type of leica lif file
+    :param ndim: unsure BUG???
     :return: np.array image matrix from file, aborts if the image is too large and returns None.
     """
 
@@ -344,6 +298,18 @@ def rescale_box_sizes(boxes: torch.Tensor,
                       current_pixel_size: Optional[float] = None,
                       cell_diameter: Optional[int] = None,
                       ):
+    """
+    Rescales bounding boxes predicted at the scaled, to the original size, such that they may be correctly displayed
+    over the original image. If neither the current pixel size, or
+    cell diameter were passed, this function returns the boxes unscaled.
+    Meant to be used with hcat.lib.utils.correct_pixel_size_image.
+
+
+    :param boxes: bounding boxes predicted by Faster RCNN
+    :param current_pixel_size: Pixel size of unscalled image
+    :param cell_diameter: Diameter of cells in unscaled image
+    :return:
+    """
     scale = 1.0
 
     if current_pixel_size is not None:
@@ -359,16 +325,22 @@ def correct_pixel_size_image(image: torch.Tensor,
                              current_pixel_size: Optional[float] = None,
                              cell_diameter: Optional[int] = None,
                              antialias: Optional[bool] = True,
-                             verbose: Optional[bool] = False):
+                             verbose: Optional[bool] = False) -> Tensor:
     """
-    Correct an image to new pixel size...
+    Upscales or downscales an torch.Tensor image to the optimal size for HCAT detection.
+    Scales to 288.88nm/px based on cell_diameter, or current_pixel_size. If neither the current pixel size, or
+    cell diameter were passed, this function returns the original image.
 
-    :param image:
-    :param cell_diameter:
-    :param current_pixel_size:
-    :param antialias:
-    :param verbose:
-    :return:
+    Shapes:
+        - image: :math:`(C_{in}, X_{in}, Z_{in})`
+
+    :param image: Image to be resized
+    :param cell_diameter: Diameter of cells in unscaled image
+    :param current_pixel_size: Pixel size of unscaled image
+    :param antialias: If true, performs antialiasing upon scaling
+    :param verbose: Prints operation to standard out
+
+    :return: Scaled image
     """
     if cell_diameter is None and current_pixel_size is None:
         print(f'Image was not scaled. Assuming pixel size of 288.88nm X/Y')
@@ -400,8 +372,18 @@ def correct_pixel_size_image(image: torch.Tensor,
     return image
 
 
-def get_dtype_offset(dtype: str = 'uint16', image_max=None) -> int:
-    """ get dtype from string """
+def get_dtype_offset(dtype: str = 'uint16',
+                     image_max: Optional[Number] = None) -> int:
+    """
+    Returns the scaling factor such that
+    such that :math:`\frac{image}{f} \in [0, ..., 1]`
+
+    Supports: uint16, uint8, uint12, float64
+
+    :param dtype: String representation of the data type.
+    :param image_max: Returns image max if the dtype is not supported.
+    :return: Integer scale factor
+    """
 
     encoding = {
         'uint16': 2 ** 16,
@@ -430,7 +412,15 @@ def get_dtype_offset(dtype: str = 'uint16', image_max=None) -> int:
     return scale
 
 
-def cochlea_to_xml(cochlea, filename=None) -> None:
+def cochlea_to_xml(cochlea: Cochlea, filename: str) -> None:
+    """
+    Create an XML file of each cell detection from a cochlea object for use in the labelimg software.
+
+    :param cochlea: Cochlea object from hcat.lib.cochlea.Cochlea
+    :param filename: full file path by which to save the xml file
+
+    :return: None
+    """
     # Xml header and root
     if filename is None:
         filename = cochlea.filename
@@ -470,31 +460,73 @@ def cochlea_to_xml(cochlea, filename=None) -> None:
 
     tree = ET.ElementTree(root)
     filename = os.path.splitext(cochlea.path)[0]
-    print(filename + '.xml')
     tree.write(filename + '.xml')
 
 
-def normalize_image(image: Tensor, normalize: bool, verbose: Optional[bool] = False) -> Tensor:
-    if verbose and normalize:
+def normalize_image(image: Tensor, verbose: Optional[bool] = False) -> Tensor:
+    """
+    Normalizes each channel in an image such that a majority of the image lies between 0 and 1.
+    Calculates the maximum value of the image following a gaussian blur with a 7x7 kernel size,
+    preventing random salt-and-pepper noise from drastically affecting maximum.
+
+    Shapes:
+        - image: :math:`(C_in, ...)`
+        - returns: :math:`(C_in, ...)`
+
+    :param image: Input image Tensor
+    :param verbose: Prints operation to standard out
+    :return: Normalized image
+    """
+    if verbose:
         print(f'[      ] Normalizing to maximum brightness...', end='')
     for c in range(image.shape[0]):
         max_pixel = gaussian_blur(image[c, ...].unsqueeze(0), kernel_size=[7, 7], sigma=0.5).max()
         image[c, ...] = image[c, ...].div(max_pixel + 1e-16).clamp(0, 1) if max_pixel != 0 else image[
             c, ...]
-    if verbose and normalize:
+    if verbose:
         print("\r[\x1b[1;32;40m DONE \x1b[0m]")
 
     return image
 
 def make_rgb(image: Tensor) -> Tensor:
+    """
+    Converts an N Channel image to rgb by adding a channel of all zeros, if necessary, or by indexing only the first
+    three channels.
+
+    Example:
+        >>> original_image = torch.rand(1,100,100)  # 1 channel image
+        >>> rgb_image = make_rgb(original_image)
+        >>> image.shape
+        torch.Size[3, 100, 100]
+
+        >>> original_image = torch.rand(5, 100, 100)
+        >>> rgb_image = make_rbg(rgb_image)
+        >>> torch.all_close(original_image[0:3, ...], rgb_image)
+        True
+
+    Shapes:
+        - image: :math:`(C, X_in, Y_in)`
+        - returns: :math:`(3, X_in, Y_in)`
+
+    :param image: Input image
+    :return: 3 Channel Image
+    """
     _, x, y = image.shape
-    if image.shape[0] == 2:
+    while image.shape[0] < 3:
         image: Tensor = torch.cat((torch.zeros((1, x, y), device=image.device), image), dim=0)
 
     return image[0:3, ...] #ALWAYS choose
 
 
 def image_to_float(image: Union[np.ndarray, Tensor], scale: int, verbose: Optional[bool] = False) -> Tensor:
+    """
+    Normalizes an input image of any dtype to torch.float32 who's values lie between 0 and 1.
+
+    :param image: Input image array
+    :param scale: Scale value by which to normalize image
+    :param verbose: Prints operation to standard out
+    :return: Normalized image
+    """
     if verbose:
         print(f'[      ] Converting Image to Float... ', end='')
 
@@ -509,6 +541,17 @@ def image_to_float(image: Union[np.ndarray, Tensor], scale: int, verbose: Option
     return image
 
 def save_image_as_png(image: Tensor, filename: str, verbose: Optional[bool] = False) -> None:
+    """
+    Saves a float image Tensor with shape :math:`(3, X_in, Y_in)` to a 8-bit, png image.
+    Pixel values not between 0 and 1 will be clipped.
+
+
+    :param image: input image tensor
+    :param filename: filename by which to save the image
+    :param verbose: Prints operation to standard out
+
+    :return: None
+    """
     if verbose:
         print(f'[      ] Saving as {filename[:-4:]}.png...', end='')
 
