@@ -116,9 +116,6 @@ def remove_edge_cells(mask: torch.Tensor) -> torch.Tensor:
     """
     Removes cells touching the border
 
-    .. warning:
-       Will not raise an error upon failure, instead returns None and prints to standard out
-
     :param mask: (B, X, Y, Z)
     :return: mask (B, X, Y, Z)
     """
@@ -442,7 +439,7 @@ def cochlea_to_xml(cochlea, filename=None) -> None:
     folder = os.path.split(filename)[0]
     folder = os.path.split(folder)[-1] if len(folder) != 0 else os.path.split(os.getcwd())[1]
 
-    _, height, width = cochlea.im_shape
+    _, height, width = cochlea.im_shape if cochlea.im_shape is not None else (-1, -1, -1)
     depth = 1
 
     root = ET.Element('annotation')
@@ -473,6 +470,7 @@ def cochlea_to_xml(cochlea, filename=None) -> None:
 
     tree = ET.ElementTree(root)
     filename = os.path.splitext(cochlea.path)[0]
+    print(filename + '.xml')
     tree.write(filename + '.xml')
 
 
@@ -521,28 +519,6 @@ def save_image_as_png(image: Tensor, filename: str, verbose: Optional[bool] = Fa
     del png
     if verbose:
         print("\r[\x1b[1;32;40m DONE \x1b[0m]")
-
-
-########################################################################################################################
-#                                                         Plotting
-########################################################################################################################
-
-def plot_embedding(embedding: torch.Tensor, centroids: torch.Tensor) -> None:
-    num = 25
-    x = embedding.detach().cpu().numpy()[0, 0, ...].flatten() * num
-    y = embedding.detach().cpu().numpy()[0, 1, ...].flatten() * num
-    plt.hist2d(y, x, bins=(embedding.shape[2], embedding.shape[3]))
-    print(centroids)
-    plt.plot(centroids[0, :, 1].cpu().numpy(), centroids[0, :, 0].cpu().numpy(), 'ro')
-
-    plt.show()
-
-def make_embedding_image(embedding):
-    x = embedding.detach().cpu().numpy()[0, 0, ...].flatten()
-    y = embedding.detach().cpu().numpy()[0, 1, ...].flatten()
-    histogram,_,_ = np.histogram2d(x, y, bins=(embedding.shape[2], embedding.shape[3]))
-    return torch.from_numpy(histogram)
-
 
 
 if __name__ == "__main__":

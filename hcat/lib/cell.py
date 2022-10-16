@@ -113,7 +113,7 @@ class Cell:
     def calculate_frequency(self, curvature: torch.Tensor, distance: torch.Tensor) -> None:
         """
         Calculates cell's best frequency from its place along the cochlear curvature.
-        Assigns values to properties: percent_loc, frequency
+        Assign values to properties: percent_loc, frequency
 
         Values of greenwood function taken from:
         Moore, B C. (1974). Relation between the critical bandwidth and the frequency-difference limen.

@@ -237,115 +237,6 @@ class Cochlea:
         file = compalg.open(filename, 'rb')
         return torch.load(file)
 
-    def compress_mask(self, vebose: bool = False) -> None:
-        """
-        Compressed just the segmentation mask, which is usually the largest object in the class. This is usefull as it
-        may be advantageous to load the class quickly without accessing the mask - for instance, getting metadata and
-        nothing more.
-
-        :param vebose: print compression statistics.
-        :return: None
-        """
-        if isinstance(self.mask, Tensor):
-            self.mask = self._compress_mask(self.mask, vebose)
-        else:
-            raise ValueError(f'Cannot compress mask of type {type(self.mask)}.')
-
-    def decompress_mask(self) -> None:
-        """
-        Inverse operation to self.compress_mask. Will decompress self.mask from bytes to Tensor using the
-        lz4 algorithm.
-
-        :return: None
-        """
-        if isinstance(self.mask, bytes):
-            self.mask = self._decompress_mask(self.mask)
-        elif isinstance(self.mask, Tensor):
-            raise ValueError(f'Cannot decompress mask of tpye {type(self.mask)}.')
-
-    @staticmethod
-    def _compress_mask(mask: Tensor, verbose: bool) -> bytes:
-        """ compressed mask via lz4 algorithm """
-        start = time.clock_gettime_ns(0)
-        shape = mask.shape
-        f = BytesIO()
-        torch.save(mask, f)
-        l = len(f.getbuffer())
-        mask = compalg.compress(f.getbuffer())
-        end = time.clock_gettime_ns(0)
-        f.close()
-
-        if verbose:
-            print(f'Compressed mask with compression ratio of {l / len(mask)} in {(end - start) / 1e9} seconds')
-
-        return mask
-
-    @staticmethod
-    def _decompress_mask(byte_mask: bytes) -> Tensor:
-        return torch.load(BytesIO(compalg.decompress(byte_mask)))
-
-    ####################################################################################################################
-    #                                                    Analysis                                                      #
-    ####################################################################################################################
-
-    def render_mask(self, path: str,
-                    random_color: Optional[bool] = False,
-                    as_single_z_frames: Optional[Union[bool, str]] = False,
-                    outline: Optional[bool] = False) -> None:
-        """
-        Renders tiff image output of predicted segmentation mask and saves to file.
-        Can either render the volume mask with each pixel being a cell id, or a random color.
-
-        :param path: path (including filename and extension) where to save the render
-        :param random_color: if True, renders each cell with a unique color
-        :param as_single_z_frames: NotImplemented
-        :param outline: render only cell outlines instead of whole volume
-        :return: None
-        """
-
-        was_compressed = False
-        if isinstance(self.mask, bytes):
-            self.decompress_mask()
-            was_compressed = True
-        c, x, y, z = self.mask.shape
-
-        if outline:
-            ind = torch.from_numpy(skimage.segmentation.find_boundaries(self.mask)).gt(0)
-        else:
-            ind = torch.ones(self.mask.shape).gt(0)
-
-        # Rust speedup
-        if random_color and not as_single_z_frames:
-            colored_mask = torch.zeros((3, x, y, z), dtype=torch.int32)
-            for i in range(3):
-                colored_mask[i, ...][ind[0, ...]] = self.mask[ind][0, ...]
-
-            print('Rendering Multicolored Tiff, may take a while...')
-            t1 = time.clock_gettime_ns(0)
-            colored_mask = self._render(colored_mask, self.num_cells)
-            t2 = time.clock_gettime_ns(0)
-            print(f'took {(t2 - t1) / 1e9} seconds')
-            imsave(path, colored_mask.squeeze(0).numpy().transpose(3, 1, 2, 0, ))
-        elif not random_color and not as_single_z_frames:
-            imsave(path, self.mask.squeeze(0).int().numpy().astype(int8).transpose(2, 0, 1))
-        # elif as_single_z_frames:
-        #     os.mkdir(path)
-        #     for i in range(z):
-
-        if was_compressed:
-            self.compress_mask()
-
-    @staticmethod
-    @torch.jit.script
-    def _render(mask: Tensor, numcells: int) -> Tensor:
-        for i in range(numcells):
-            torch.random.manual_seed(i)
-            color = torch.randint(low=0, high=255, size=(3,))
-            index = mask == (i + 1)
-            for i in range(3):
-                mask[i, ...][index[0, ...]] = int(color[i])
-        return mask
-
     # @graceful_exit('\x1b[1;31;40m' + 'ERROR: csv generation failed.' + '\x1b[0m')
     def write_csv(self, filename: Optional[Union[bool, str]] = None) -> None:
         """
@@ -395,7 +286,6 @@ class Cochlea:
 
             filename = filename if filename.endswith('.csv') else os.path.splitext(filename)[0] + '.csv'
 
-
             f = open(filename, 'w')
             f.write(f'Filename: {self.filename}\n')
             f.write(f'Analysis Date: {self.analysis_date}\n')
@@ -407,140 +297,13 @@ class Cochlea:
                 f.write('\n')
             f.close()
 
-    # @graceful_exit('\x1b[1;31;40m' + 'ERROR: Figure Render failed.' + '\x1b[0m')
-    def make_segment_fig(self, filename: Optional[str] = None) -> None:
-        """
-        Make summary figure for quick interpretation of results.
-        :param filename: filename to save figure as. If unset, uses image filename.
-        :return: None
-        """
-        fig = plt.figure(figsize=(15, 8))
-
-        ax = []
-        x = [0.05, 0.35]
-        y = [0.55, 0.075]
-        w = 0.2
-        h = 0.375
-        for i in range(2):
-            ax_ = []
-            for j in range(2):
-                ax_.append(fig.add_axes([x[i], y[j], w, h]))
-            ax.append(ax_)
-
-        hist_ax = []
-        x = [0.05 + 0.2, 0.35 + 0.2]
-        y = [0.55, 0.075]
-        w = 0.05
-        h = 0.375
-        for i in range(2):
-            ax_ = []
-            for j in range(2):
-                ax_.append(fig.add_axes([x[i], y[j], w, h]))
-            hist_ax.append(ax_)
-
-        im_ax = fig.add_axes([0.65, 0.075 * 2 + 0.25, 0.33, 0.55 - 0.075 / 2])
-        cgram_ax = fig.add_axes([0.652, 0.075, 0.33, 0.25])
-
-        num_cell = []
-        # fig.set_size_inches(11,8)
-        ind = [[0, 0], [0, 1], [1, 0], [1, 1]]
-
-        for i, key in enumerate(self.cells[0].channel_names):
-            signal = []
-            perc = []
-            x, y = ind[i]
-            if i > 3:
-                continue
-
-            print(len(self.cells))
-            for cell in self.cells:
-                if cell.percent_loc is not None:
-                    perc.append(cell.percent_loc)
-                signal.append(cell.channel_stats[key]['mean'])
-
-            if len(perc) != len(signal):
-                perc = [i for i in range(len(signal))]
-
-            perc = torch.tensor(perc) / max(perc)
-            signal = torch.tensor(signal)
-            channel = key
-            signal = signal.div(signal.max() * 2)
-
-            mean_gfp = []
-            try:
-                for window in torch.linspace(0, 1, 20):
-                    mean_gfp.append(signal[torch.logical_and(perc > window, perc < (window + 0.1))].mean())
-            except IndexError:
-                print(window, len(mean_gfp), signal.shape, perc.shape)
-
-            stylestr = ['green', 'grey', 'blue', 'red']
-
-            ax[x][y].plot(perc * 100, signal, 'ko', alpha=0.5)
-            print(torch.linspace(0, 100, 20))
-            ax[x][y].plot(torch.linspace(0, 100, 20), mean_gfp, c=stylestr[i], ls='-', lw=3)
-            ax[x][y].set_xlabel('Cell Location (Cochlear % Apex -> Base)')
-            ax[x][y].set_ylabel(f'Cell Mean {channel[i]} Intensity (AU)')
-            ax[x][y].legend(['Cell'])
-            ax[x][y].axhline(torch.mean(signal), c=stylestr[i], lw=1, ls='-')
-            ax[x][y].axhline(torch.mean(signal) + torch.std(signal), c=stylestr[i], lw=1, ls='--', alpha=0.5)
-            ax[x][y].axhline(torch.mean(signal) - torch.std(signal), c=stylestr[i], lw=1, ls='--', alpha=0.5)
-            # ax[x][y].set_ylim([torch.mean(signal) - torch.std(signal)*3, torch.mean(signal) + torch.std(signal) * 3])
-
-            hist_ax[x][y].hist(signal.numpy(), color=stylestr[i], bins=30, orientation='horizontal')
-            hist_ax[x][y].spines['right'].set_visible(False)
-            hist_ax[x][y].spines['top'].set_visible(False)
-            # hist_ax[x][y].spines['bottom'].set_visible(False)
-            hist_ax[x][y].spines['left'].set_visible(False)
-            hist_ax[x][y].set_yticks([], minor=True)
-            hist_ax[x][y].axis('off')
-
-        # new = fig.add_axes([0, 0, 0.5, 0.5])
-        # new.plot([0,1,2,3,4], [2,3,4,5,6])
-        was_compressed = False
-        if isinstance(self.mask, bytes):
-            self.decompress_mask()
-            was_compressed = True
-
-        mask = self.mask.sum(-1).gt(0).squeeze(0)
-
-        if was_compressed:
-            self.compress_mask()
-
-        im_ax.imshow(mask.numpy())
-
-        if self.curvature is not None:
-            im_ax.plot(self.curvature[0, :], self.curvature[1, :], lw=3)
-            apex = self.curvature[:, self.cochlear_distance.argmax()]
-            im_ax.plot(apex[0], apex[1], 'ro')
-        im_ax.set_title('Max Projection Cell Masks')
-
-        perc = []
-        for cell in self.cells:
-            if cell.percent_loc is not None:
-                perc.append(cell.percent_loc)
-        perc = torch.tensor(perc) / max(perc)
-
-        fig.suptitle(os.path.split(self.filename)[-1])
-        perc = perc.mul(100).float().round().div(100)
-        cgram_ax.hist(perc.numpy(), bins=50, color='k')
-        cgram_ax.set_title('Cochleogram')
-        cgram_ax.set_xlabel('Cell Location (Cochlear % Apex -> Base)')
-        cgram_ax.set_ylabel('Num Cells')
-
-        if filename is not None:
-            plt.savefig(filename)
-        else:
-            plt.show()
-
-        return fig
-
     def make_detect_fig(self, image: Tensor, filename: Optional[str] = None):
         """
-        image has to be torch.Tensor
+        Renders the summary figure of the HCAT detection analysis.
 
-        :param image:
-        :param filename:
-        :return:
+        :param image: torch.Tensor image which cells will be rendered on
+        :param filename: filename by which to save the figure
+        :return: None
         """
         image = image.cpu() if image.min() < 0 else image.cpu()
 
@@ -599,7 +362,16 @@ class Cochlea:
             fig.savefig(self.path[:-4:] + '.jpg', dpi=400)
         plt.close(fig)
 
-    def make_cochleogram(self, filename: Optional[str] = None, type: Optional[str] = None):
+    def make_cochleogram(self, filename: Optional[str] = None, type: Optional[str] = None, bin_size: Optional[int] = 2):
+        """
+        Generates a cochleogram from a detection analysis and saves it to a figure.
+        Does nothing if the cochlear distance is less than 4000um.
+
+        :param filename: Filename to save the cochleogram figure. Defaults to the base path of the cochlea object.
+        :param type: Unused.
+        :param bin_size: Cochleogram bin size in percentage total length [0 -> 100]
+        :return: None
+        """
 
         if self.curvature is None:
             print('\x1b[1;33;40mWARNING: ' +
@@ -607,7 +379,7 @@ class Cochlea:
                   + '\x1b[0m')
             return None
 
-        def hist_coords(dist, nbin=50):
+        def hist_coords(dist, nbin=100 / bin_size):
             dist = torch.tensor(dist)
             hist = torch.histc(dist.float(), nbin)
 

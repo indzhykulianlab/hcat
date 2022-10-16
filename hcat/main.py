@@ -1,5 +1,4 @@
 from hcat.detect import _detect
-from hcat.segment import _segment
 from hcat.detect_gui import gui
 
 import glob
@@ -20,32 +19,6 @@ def cli(ctx):
     if ctx.invoked_subcommand is None:
         """ Default subcommand is running full analysis """
         gui().main_loop()
-
-
-@cli.command()
-@click.argument('f', default=None)
-@click.option('--channel', default=2, help='Channel index to segment')
-@click.option('--intensity_reject_threshold', default=0.05, help='Cell cytosol intensity rejection threshold')
-@click.option('--dtype', default=None, help='dtype of input image')
-@click.option('--unet', is_flag=True, help='Run with Unet+Watershed Backbone')
-@click.option('--cellpose', is_flag=True, help='Run with Cellpose Backbone')
-@click.option('--figure', is_flag=True, help='Save preliminary analysis figure')
-@click.option('--no_post', is_flag=True, help='Do not postprocess')
-def segment(f: str, channel: int, intensity_reject_threshold: float,
-            dtype: Optional[str],
-            unet: bool, cellpose: bool, no_post: bool,
-            figure: Optional[bool]) -> None:
-
-    files = glob.glob(f)
-    for filename in files:
-        try:
-            _segment(f=filename, channel=channel, intensity_reject_threshold=intensity_reject_threshold,
-                     dtype=dtype, unet=unet, cellpose=cellpose, no_post=no_post, figure=figure)
-        except Exception:
-            print(f'Error in file: {filename}')
-
-    return None
-
 
 @cli.command()
 @click.argument('f', default=None)

@@ -5,11 +5,15 @@ import re
 import torch
 import wget
 from hcat.backends.convNeXt import ConvNeXt
-
 from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.anchor_utils import AnchorGenerator
 
 def init_model():
+    """
+    Initalizes the Faster RCNN detection model for HCAT.
+
+    :return: Faster RCNN model
+    """
     backbone = ConvNeXt(in_channels=3, dims=[128, 256, 512, 1024], depths=[3, 3, 27, 3], out_channels=256)
     backbone.out_channels = 256
 
@@ -27,8 +31,15 @@ def init_model():
 
 
 def FasterRCNN_from_url(url: str, device: str):
-    """ loads model from url """
+    """
+    Loads a FasterRCNN model from a url OR from a local source if available.
+
+    :param url: URL of pretrained model path. Will save the model to the source directory of HCAT.
+    :param device: Device to load the model to.
+    :return:
+    """
     path = os.path.join(hcat.__path__[0], 'detection_trained_model.trch')
+    print(path)
 
     # Research Purposes...
     # convnext = '/home/chris/Dropbox (Partners HealthCare)/HairCellInstance/Max_project_detection_resnet_NeXT101_04March_2022_MinValidation.trch'
@@ -53,6 +64,12 @@ def FasterRCNN_from_url(url: str, device: str):
 
 
 def _is_url(input: str):
+    """
+    Checks if a string is a url.
+
+    :param input: Any string
+    :return: True if the string is a url.
+    """
     regex = re.compile(
         r'^(?:http|ftp)s?://'  # http:// or https://
         r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain...

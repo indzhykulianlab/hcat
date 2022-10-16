@@ -1,5 +1,6 @@
 import torch.nn as nn
 from torch import Tensor
+from typing import Tuple, Optional
 import wget
 import os.path
 import torch
@@ -18,17 +19,6 @@ class Backend(nn.Module):
         Disables image rejection; forces backend model to FULLY evaluate every image.
 
         Image rejection is on by default, disabling may significantly degrade overall performance.
-
-        Example:
-
-        >>> from hcat.backends.spatial_embedding import SpatialEmbedding
-        >>> backend = SpatialEmbedding()
-        >>>
-        >>> url = 'https://www.model_location.com/model.trch'
-        >>> backend.load(url) # Works with url
-        >>>
-        >>> model_path = 'path/to/my/model.trch'
-        >>> backend.load(model_path) # Also works with path
         """
         self.image_reject = False
 
@@ -42,14 +32,14 @@ class Backend(nn.Module):
 
     @staticmethod
     @torch.jit.script
-    def _is_image_bad(image: Tensor, min_threshold: float = 0.05):
+    def _is_image_bad(image: Tensor, min_threshold: Optional[float] = 0.05, brightness_threshold: Optional[int] = 3500):
         """
-        Check if an image is likely to NOT contain any cells.
-        Uses cytosolic stain threshold.
+        Check if an image is likely to NOT contain any cells by checking total percentage of pixels above a brightness threshold.
 
-        :param image: input torch tensor
+        :param image: Input sub-crop of an image. torch.Tensor of shape [B, C=1, X, Y]
         :param min_threshold: minimum value as percentage of saturated voxels
-        :return:
+        :param brightness_threshold: integer pixel intensity cutoff value. [uint16, 0 -> 2**16]
+        :return: True if the image likely has no viable cells
         """
         is_bad = False
 
@@ -145,3 +135,6 @@ class Backend(nn.Module):
             out[0, i, ...] = (mask[0, 0, ...] == u).float()
 
         return out
+
+def pooop(x: Tensor) -> Tensor:
+    return x

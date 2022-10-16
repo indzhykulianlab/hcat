@@ -1,3 +1,5 @@
+import glob
+
 import PySimpleGUI as sg
 from hcat.lib.cell import Cell
 from hcat.lib.utils import calculate_indexes
@@ -22,13 +24,9 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, FigureCanvasAgg
 import torchvision.transforms.functional as ttf
 
 from hcat.backends.detection import FasterRCNN_from_url
+import os.path
 
 MAX_WIDTH, MAX_HEIGHT = 900, 900
-
-
-# ------------------------------- END OF YOUR MATPLOTLIB CODE -------------------------------
-
-# ------------------------------- Beginning of Matplotlib helper code -----------------------
 
 
 class gui:
@@ -38,23 +36,25 @@ class gui:
         # sg.set_options(font='Any')
 
         button_column = [
-            [sg.FileBrowse(size=(15, 1), enable_events=True), ],
-            [sg.Button('Load', size=(15, 1)), ],
-            [sg.Button('Save', size=(15, 1))],
+            [sg.FileBrowse(size=(16, 1), enable_events=True), ],
+            [sg.Button('Load', size=(16, 1)), ],
+            [sg.Button('Save', size=(16, 1))],
+            [sg.Button("⇦",k="previous_image", size=(4, 1)), sg.Push(), sg.Button("⇨", k="next_image", size=(4,1))],
             [sg.HorizontalSeparator(p=(0, 20))],
-            [sg.Text('Cell Diameter (In Pixels)')],
+            [sg.Text('Cell Diameter\n(In Pixels)')],
             [sg.Input(size=(10, 1), enable_events=True, default_text=30, key='Diameter'),
              sg.OK(size=(3, 1), key='change_size')],
             [sg.Text('Detection Threshold')],
-            [sg.Slider(range=(0, 100), orientation='h', enable_events=True, default_value=80, key='Threshold')],
+            [sg.Slider(range=(0, 100), orientation='h', enable_events=True, default_value=80, key='Threshold', expand_x=True)],
             [sg.Text('Overlap Threshold')],
-            [sg.Slider(range=(0, 100), orientation='h', enable_events=True, default_value=30, key='NMS')],
+            [sg.Slider(range=(0, 100), orientation='h', enable_events=True, default_value=30, key='NMS', expand_x=True)],
             [sg.HorizontalSeparator(p=(0, 20))],
             [sg.Button('Run Analysis', size=(15, 1))],
-            [sg.Check(text='Live Update: ', key='live_update', enable_events=True)]
+            [sg.Check(text=' Live Update', key='live_update', enable_events=True)],
+            [sg.Check(k='savexml', text=' Save XML', default=False, enable_events=True)]
         ]
         image_column = [
-            [sg.Image(filename='', key='image', size=(900, 900), enable_events=True)]
+            [sg.Push(), sg.Image(filename='', key='image', size=(900, 900), enable_events=True), sg.Push()]
         ]
 
         adjustment_column = [
@@ -66,37 +66,36 @@ class gui:
 
             [sg.Text(text='RED', text_color='#ff0000')],
             [sg.Text('Brightness'),
-             sg.Slider(key='r_brightness', range=(0, 4), default_value=1, enable_events=True, orientation='h',
+             sg.Slider(key='r_brightness', range=(-1, 1), default_value=0, enable_events=True, orientation='h',
                        resolution=0.01, expand_x=True, size=(1, 10))],
             [sg.Text('Contrast  '),
-             sg.Slider(key='r_contrast', range=(0, 2), default_value=1, enable_events=True, orientation='h',
+             sg.Slider(key='r_contrast', range=(0, 3), default_value=1, enable_events=True, orientation='h',
                        resolution=0.01,
                        expand_x=True, size=(1, 10))],
             [sg.Text('', pad=(0, 20))],
 
             [sg.Text(text='GREEN', text_color='#00ff00')],
             [sg.Text('Brightness'),
-             sg.Slider(key='g_brightness', range=(0, 4), default_value=1, enable_events=True, orientation='h',
+             sg.Slider(key='g_brightness', range=(-1, 1), default_value=0, enable_events=True, orientation='h',
                        resolution=0.01, expand_x=True, size=(1, 10))],
             [sg.Text('Contrast  '),
-             sg.Slider(key='g_contrast', range=(0, 2), default_value=1, enable_events=True, orientation='h',
+             sg.Slider(key='g_contrast', range=(0, 3), default_value=1, enable_events=True, orientation='h',
                        resolution=0.01,
                        expand_x=True, size=(1, 10))],
 
             [sg.Text('', pad=(0, 20))],
             [sg.Text(text='BLUE', text_color='#0000ff')],
             [sg.Text('Brightness'),
-             sg.Slider(key='b_brightness', range=(0, 4), default_value=1, enable_events=True, orientation='h',
+             sg.Slider(key='b_brightness', range=(-1, 1), default_value=0, enable_events=True, orientation='h',
                        resolution=0.01, expand_x=True, size=(1, 10))],
             [sg.Text('Contrast  '),
-             sg.Slider(key='b_contrast', range=(0, 2), default_value=1, enable_events=True, orientation='h',
+             sg.Slider(key='b_contrast', range=(0, 3), default_value=1, enable_events=True, orientation='h',
                        resolution=0.01,
                        expand_x=True, size=(1, 10))],
             [sg.Button('Reset', key='reset_rgb')],
             [sg.HorizontalSeparator(pad=(0, 30))],
             [sg.Text('OHC: None', key='OHC_count')],
             [sg.Text('IHC: None', key='IHC_count')],
-
         ]
 
         layout = [[sg.Column(button_column, vertical_alignment='Top'),
@@ -122,6 +121,10 @@ class gui:
         # State
         self.__LOADED__ = False
         self.__DIAMETER__ = 30
+
+        self.base_folder = None
+        self.valid_image_files = []
+        self.current_image_index = 0
 
         # Image Buffers
         self.raw_image = None  # raw image from file
@@ -179,16 +182,74 @@ class gui:
                 sg.popup_ok('No File Selected. Please Select a file via "Browse"')
 
             if event == 'Load' and values['Browse'] != '':
-                self.load_image(values['Browse'])
+                self.base_folder = os.path.split(values['Browse'])[0]
+                self.valid_image_files = []
+
+                for ext in ['*.png', '*.tif', '*.jpeg', '*.tiff', '*.TIF', '*.jpg']:
+                    self.valid_image_files.extend(glob.glob(os.path.join(self.base_folder, ext)))
+
+                self.valid_image_files = [*set(self.valid_image_files)]
+                self.valid_image_files.sort()
+
+                # self.current_image_index = -1
+                # for f in self.valid_image_files:
+                #     self.current_image_index += 1
+                #     if f == values['Browse']:
+                #         break
+
+                for i, f in enumerate(self.valid_image_files):
+                    if os.path.split(f) == os.path.split(values['Browse']):
+                        self.current_image_index = i
+                        break
+
+
+                if self.valid_image_files[self.current_image_index] != values['Browse']:
+                    print(f'{self.current_image_index}, {self.valid_image_files}')
+
+                self.load_image(self.valid_image_files[self.current_image_index])
+
+                if values['live_update']:
+                    self.fast_model()
+                    self.threshold_and_nms(values['Threshold'], values['NMS'])
 
                 self.draw_image()
                 self.render_hist()
 
+            if event == 'previous_image' and values['Browse'] != '':
+                self.current_image_index = self.current_image_index - 1
+                if self.current_image_index < 0:
+                    self.current_image_index = len(self.valid_image_files) - 1
+                try:
+                    self.load_image(self.valid_image_files[self.current_image_index])
+                except:
+                    print(self.current_image_index, len(self.valid_image_files), self.valid_image_files)
+                if values['live_update']:
+                    self.fast_model()
+                    self.threshold_and_nms(values['Threshold'], values['NMS'])
+
+                self.draw_image()
+                self.render_hist()
+
+            if event == 'next_image' and values['Browse'] != '':
+                self.current_image_index = self.current_image_index + 1
+                if self.current_image_index > len(self.valid_image_files) - 1:
+                    self.current_image_index = 0
+
+                try:
+                    self.load_image(self.valid_image_files[self.current_image_index])
+                except:
+                    print(self.current_image_index, len(self.valid_image_files), self.valid_image_files)
+
+                if values['live_update']:
+                    self.fast_model()
+                    self.threshold_and_nms(values['Threshold'], values['NMS'])
+
+                self.draw_image()
+                self.render_hist()
 
             # Update Histogram:
-            if event in self.rgb_adjustments and self.__LOADED__:
+            if (event in self.rgb_adjustments) or event in ('Red', 'Blue', 'Green') and self.__LOADED__:
                 if values['live_update']:
-                    # self.run_detection_model()
                     self.fast_model()
                     self.threshold_and_nms(values['Threshold'], values['NMS'])
 
@@ -204,12 +265,16 @@ class gui:
                     sg.popup_ok(
                         f'Cannot convert input: {values["Diameter"]} to a number. Defaulting to {self.__DIAMETER__}')
 
+                self.delete_fig_agg()
+                try:
+                    self.load_image(self.valid_image_files[self.current_image_index])
+                except IndexError:
+                    print(self.valid_image_files ,self.current_image_index, len(self.valid_image_files))
+
                 if values['live_update']:
-                    self.run_detection_model()
+                    self.fast_model()
                     self.threshold_and_nms(values['Threshold'], values['NMS'])
 
-                self.delete_fig_agg()
-                self.load_image(values['Browse'])
                 self.draw_image()
                 self.render_hist()
 
@@ -227,20 +292,26 @@ class gui:
                 self.draw_image()
 
             if event == 'Save' and self.labels is not None:
-                self.save(values['Browse'])
+                self.save(self.valid_image_files[self.current_image_index], values['savexml'])
                 sg.popup_quick_message('Saved!')
 
             if event == 'reset_rgb':
                 self.reset_rgb_sliders()
                 self.window.refresh()
                 self.contrast = [1.0, 1.0, 1.0]
-                self.brightness = [1.0, 1.0, 1.0]
+                self.brightness = [0.0, 0.0, 0.0]
 
                 if self.display_image is not None:
                     self.render_hist()
                     self.draw_image()
 
+                if values['live_update']:
+                    self.fast_model()
+
     def run_detection_model(self):
+
+        raise PendingDeprecationWarning
+
         _image = self.scaled_image.clone()
         for i in range(3):
             if self.rgb[i]:
@@ -274,6 +345,7 @@ class gui:
 
         scale: int = hcat.lib.utils.get_dtype_offset(img.dtype, img.max())
         self.raw_image: Tensor = hcat.lib.utils.image_to_float(img, scale, verbose=False).to(self.device)
+        self.raw_image: Tensor = hcat.lib.utils.make_rgb(self.raw_image)  # Ensure at least 3 colors
         self.scaled_image: Tensor = hcat.lib.utils.correct_pixel_size_image(self.raw_image, None,
                                                                             cell_diameter=float(self.__DIAMETER__),
                                                                             verbose=False).to(self.device)
@@ -296,28 +368,29 @@ class gui:
         self.scores = None
 
     def threshold_and_nms(self, thr, nms_thr) -> Tensor:
+        if self.all_boxes is not None:
+            ind = self.all_scores > (thr / 100)
 
-        ind = self.all_scores > (thr / 100)
-        if isinstance(self.all_labels, list):
-            _labels = torch.tensor([1 if l == 'OHC' else 2 for l, i in zip(self.all_labels, ind) if i > 0])
-        else:
-            _labels = self.all_labels[ind]
+            if isinstance(self.all_labels, list):
+                _labels = torch.tensor([1 if l == 'OHC' else 2 for l, i in zip(self.all_labels, ind) if i > 0])
+            else:
+                _labels = self.all_labels[ind]
 
-        _boxes = self.all_boxes[ind, :]
-        _scores = self.all_scores[ind]
+            _boxes = self.all_boxes[ind, :]
+            _scores = self.all_scores[ind]
 
-        ind = torchvision.ops.nms(_boxes, _scores, nms_thr / 100)  # int indicies
+            ind = torchvision.ops.nms(_boxes, _scores, nms_thr / 100)  # int indicies
 
-        _boxes = _boxes[ind, :]
-        _scores = _scores[ind]
+            _boxes = _boxes[ind, :]
+            _scores = _scores[ind]
 
-        _labels = ['OHC' if _labels[i] == 1 else 'IHC' for i in ind]
+            _labels = ['OHC' if _labels[i] == 1 else 'IHC' for i in ind]
 
-        self.boxes = _boxes
-        self.labels = _labels
-        self.scores = _scores
+            self.boxes = _boxes
+            self.labels = _labels
+            self.scores = _scores
 
-        self.update_cell_counts()
+            self.update_cell_counts()
 
     def get_color_histogram(self):
         color = ['r', 'g', 'b']
@@ -362,10 +435,11 @@ class gui:
         self.window.refresh()
 
     def draw_figure(self):
-        figure_canvas_agg = FigureCanvasTkAgg(self.fig, self.window['Histogram'].TKCanvas)
-        figure_canvas_agg.draw()
-        figure_canvas_agg.get_tk_widget().pack(side='top', fill='both', expand=1)
-        self.fig_agg = figure_canvas_agg
+        pass
+        # figure_canvas_agg = FigureCanvasTkAgg(self.fig, self.window['Histogram'].TKCanvas)
+        # figure_canvas_agg.draw()
+        # figure_canvas_agg.get_tk_widget().pack(side='top', fill='both', expand=1)
+        # self.fig_agg = figure_canvas_agg
 
     def draw_image(self):
         cell_key = {'OHC': '#56B4E9', 'IHC': '#E69F00'}
@@ -373,14 +447,14 @@ class gui:
         if not self.__LOADED__:
             return
 
-        _image = self.display_image_scaled.clone()
+        _image = self.display_image_scaled.clone()[0:3, ...]
+        weight = torch.ones((3, 1, 1), device=self.device) * torch.tensor(self.contrast, device=self.device).view(3, 1, 1)
+        bias = torch.ones((3, 1, 1), device=self.device) * torch.tensor(self.brightness, device=self.device).view(3, 1, 1)
 
-        for i in range(3):
-            if self.rgb[i]:
-                _image[i] = ttf.adjust_brightness(_image[[i], ...], self.brightness[i])
-                _image[i] = ttf.adjust_contrast(_image[[i], ...], self.contrast[i])
+        _image = _image - (0.5 - bias * 2)
+        _image = torch.clamp(_image * weight + bias + (0.5 - bias * 2), 0, 1)
+        _image = _image * torch.tensor(self.rgb, device=self.device).view(3, 1, 1)
 
-            _image[i] = _image[i, ...] * self.rgb[i]
 
         _image: Tensor = hcat.lib.utils.make_rgb(_image)
         _image: Tensor = _image.mul(255).round().to(torch.uint8).cpu()
@@ -404,16 +478,28 @@ class gui:
 
     def reset_rgb_sliders(self):
         for key in self.rgb_adjustments:
-            self.window[key].update(value=1)
+            if 'brightness' in key:
+                self.window[key].update(value=0)
+            else:
+                self.window[key].update(value=1)
+
         self.window.refresh()
 
-    def save(self, filename):
-        cells = []
-        _boxes = self.boxes.clone().div(self.ratio)
 
+    def save(self, filename, xml):
+
+        # raise ValueError('Saving boxes is broken. \nThe boxes does not account for change in pixel size of original image.'
+        #                  'Messes up the xml saving procedure. We account for ratio, but not change in pixel size... FIX NOW BOOB')
+
+        cells = []
+
+        scale = 30 / float(self.__DIAMETER__) # Adjust from the base image pixel scaling...
+
+        _boxes = self.boxes.clone().div(self.ratio).div(scale)
         for i in range(self.boxes.shape[0]):
             type = 'OHC' if self.labels[i] == 1 or self.labels[i] == 'OHC' else 'IHC'
             x0, y0, x1, y1 = _boxes[i, :]
+
             loc = (0, x0 + (x1 - x0)/2, y0 + (y1 - y0)/2, 0)
             cells.append(
                 Cell(loc=torch.tensor(loc),
@@ -422,12 +508,15 @@ class gui:
                      boxes=_boxes[i, :],
                      cell_type=type)
             )
-        c = Cochlea(filename=filename,
+        c = Cochlea(path=filename,
                     cells=cells,
                     analysis_type='detect')
 
         c.write_csv(filename=filename + '_analyzed.csv')
-        c.make_detect_fig(self.scaled_image, filename=filename+'_analyzed.jpg')
+        c.make_detect_fig(self.raw_image, filename=filename+'_analyzed.jpg')
+
+        if xml:
+            hcat.lib.utils.cochlea_to_xml(c)
 
     def update_cell_counts(self):
         if self.labels:
@@ -442,7 +531,7 @@ class gui:
     @staticmethod
     def cell_nms(cells: List[Cell], nms_threshold: float) -> List[Cell]:
         """
-        Perforns non maximum supression on the resulting cell predictions
+        Perforns non-maximum supression on the resulting cell predictions
 
         :param cells: Iterable of cells
         :param nms_threshold: cell iou threshold
@@ -479,21 +568,17 @@ class gui:
             sg.popup_quick_message('Loading model from file. May take a while.')
             self.model = FasterRCNN_from_url(url=__model_url__, device=self.device)
 
-            _model = torch.jit.script(self.model)
-            _model.save('/home/chris/Desktop/frcnn.trch')
-
         _image = self.scaled_image.clone()[0:3,...]
 
-        for i in range(3):
-            if self.rgb[i]:
-                _image[i] = ttf.adjust_brightness(_image[[i], ...], self.brightness[i])
-                _image[i] = ttf.adjust_contrast(_image[[i], ...], self.contrast[i])
-            else:
-                _image[i] = _image[i, ...] * self.rgb[i]
+        weight = torch.ones((3, 1, 1), device=self.device) * torch.tensor(self.contrast, device=self.device).view(3, 1, 1)
+        bias = torch.ones((3, 1, 1), device=self.device) * torch.tensor(self.brightness, device=self.device).view(3, 1, 1)
+
+        _image = _image - (0.5 - bias * 2)
+        _image = torch.clamp(_image * weight + bias + (0.5 - bias * 2), 0, 1)
+        _image = _image * torch.tensor(self.rgb, device=self.device).view(3, 1, 1)
 
         _, x, y = _image.shape
         x_ind: List[List[int]] = calculate_indexes(10, 246, x, x)  # [[0, 255], [30, 285], ...]
-        print(x_ind)
         y_ind: List[List[int]] = calculate_indexes(10, 246, y, y)  # [[0, 255], [30, 285], ...]
 
         generator = product(x_ind, y_ind)

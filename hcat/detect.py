@@ -43,13 +43,31 @@ def _detect(f: Optional[str] = None,
             no_curve: Optional[bool] = False,
             verbose: Optional[bool] = True):
     """
-    2D hair cell detection algorithm.
-    Loads arbitrarily large 2d image and performs iterative faster rcnn detection on the entire image.
+    HCAT detection algorithm.
 
-    :param *str* f: path to image by which to analyze
-    :param *float* cell_detection_threshold: cells below threshold are rejected
-    :param *float* nms_threshold: iou rejection threshold for nms.
-    :return: *Cochlea* object containing data of analysis.
+    This algorithm will iterate over an arbirarily large image and excecute a pretrained Faster RCNN detection algorithm
+    to detect and classify cochlear hair cells. Not meant to be called directly.
+
+    :param f: file path to an image to be loaded and preprocessed. Image loading and preprocessing may be bypassed by passing image data with the kwarg "image_base".
+    :param image_base:  An arbitrarily large torch.Tensor of a preprocessed image to analyze. May be ignored if a filepath to an image is passed via kwarg "f".
+    :param curve_path: File path to a pre-calculated list of points denoting the curve of the cochlea from fiji.
+    :param cell_detection_threshold: Rejection thresholds of cell predictions by likelihood score.
+    :param nms_threshold: NMS intersection over union threshold for removing overlapping bounding boxes.
+    :param dtype: Data type of input image. Valid options are ['uint8', 'uint16', 'uint12', 'float64']
+    :param model: An optional pretrained Faster RCNN detection model. Will default to the pretrained Faster RCNN with a ConvNeXT backbone.
+    :param scale: Optional dtype scaling factor by which to normalize image. Will be inferred from dtype if possible.
+    :param save_xml: If true, HCAT will save the results of the analysis as bounding boxes in the PASCAL format.
+    :param save_fig: If true, HCAT will save a rendering of the original image with a cell detections overlay.
+    :param save_png: If true, HCAT will save a png of the input image.
+    :param save_csv: If true, HCAT will save a csv of the cell detection analysis
+    :param normalize: If true, HCAT will normalize the image pixels to lie between -1 and 1.
+    :param pixel_size: X/Y pixel size (nm) of the input image. Will default to 288nm. Is mutually exclusive with cell_diameter.
+    :param cell_diameter: The diameter of the cell in pixels. Will default to 30. Is mutually exclusive with pixel_size.
+    :param return_model: Will return an instance of the Faster RCNN model used to detect hair cells.
+    :param no_curve: Will prevent HCAT from performing the cochlea path estimation.
+    :param verbose: Will print to standard out each step of HCAT
+
+    :return: A cochlea object of the detection analysis.
     """
 
     if verbose: print(f'Performing Hair Cell Detection Task')
