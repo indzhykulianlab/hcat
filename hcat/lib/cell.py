@@ -1,7 +1,7 @@
 import torch
 from torchvision.ops.boxes import box_convert
 from typing import Tuple, Dict, Optional
-from hcat.train.utils import _crop
+from hcat.lib.utils import _crop
 from torch import Tensor
 
 

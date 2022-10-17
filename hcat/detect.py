@@ -15,8 +15,6 @@ from itertools import product
 import numpy as np
 from hcat.lib.explore_lif import get_xml
 import torchvision.ops
-import skimage.io as io
-from numpy.typing import ArrayLike
 
 import os.path
 from typing import Optional, List, Dict, Callable, Tuple, Union

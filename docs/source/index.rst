@@ -8,17 +8,16 @@ Welcome to HCAT's documentation!
 
 .. toctree::
    :caption: Analysis Entrypoints:
-   :maxdepth: 3
+   :maxdepth: 5
 
-   segment
    detect
 
 .. toctree::
    :caption: API Guide:
    :maxdepth: 3
 
-   src/backends
    src/lib
+   src/backend
 
 
 Indices and tables

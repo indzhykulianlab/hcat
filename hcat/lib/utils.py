@@ -7,8 +7,6 @@ import torchvision.transforms.functional
 from torchvision.transforms.functional import gaussian_blur
 
 from hcat.lib.explore_lif import Reader
-from hcat.train.transforms import _crop
-from hcat.lib.cochlea import Cochlea
 
 import numpy as np
 import skimage.io as io
@@ -18,6 +16,23 @@ from tqdm import trange
 
 import matplotlib.pyplot as plt
 import xml.etree.ElementTree as ET
+
+
+@torch.jit.script
+def _crop(img: torch.Tensor, x: int, y: int, z: int, w: int, h: int, d: int) -> torch.Tensor:
+    """
+    torch scriptable function which crops an image
+
+    :param img: torch.Tensor image of shape [..., X, Y, Z]
+    :param x: x coord of crop box
+    :param y: y coord of crop box
+    :param z: z coord of crop box
+    :param w: width of crop box
+    :param h: height of crop box
+    :param d: depth of crop box
+    :return:
+    """
+    return img[..., x:x + w, y:y + h, z:z + d]
 
 
 def graceful_exit(message):
@@ -412,7 +427,7 @@ def get_dtype_offset(dtype: str = 'uint16',
     return scale
 
 
-def cochlea_to_xml(cochlea: Cochlea, filename: str) -> None:
+def cochlea_to_xml(cochlea, filename: str) -> None:
     """
     Create an XML file of each cell detection from a cochlea object for use in the labelimg software.
 

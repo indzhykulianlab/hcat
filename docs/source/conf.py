@@ -18,7 +18,7 @@ pygments_style = 'sphinx'
 # -- Project information -----------------------------------------------------
 
 project = 'HCAT'
-copyright = '2021, Chris Buswinka'
+copyright = '2022, Chris Buswinka'
 author = 'Chris Buswinka'
 
 # The full version, including alpha/beta/rc tags

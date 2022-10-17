@@ -2,7 +2,6 @@ import pandas
 from sklearn.cluster import DBSCAN
 import torch
 from torch import Tensor
-from hcat.train.transforms import erosion
 import hcat.lib.utils
 from hcat import ShapeError
 
@@ -18,7 +17,7 @@ import skimage.segmentation
 import skimage.transform
 import skimage.feature
 
-from hcat.train.transforms import _crop
+from hcat.lib.utils import _crop
 from hcat.lib.cell import Cell
 from hcat.lib.utils import graceful_exit
 
