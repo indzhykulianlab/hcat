@@ -32,11 +32,15 @@ def cli(ctx):
 @click.option('--normalize', is_flag=True, help='Threshold (between 0 and 1) of cell detection.')
 @click.option('--pixel_size', default=None, help='Pixel size in nm')
 @click.option('--cell_diameter', default=None, help='Cell diameter in pixels')
+@click.option('--predict_curvature', default=None, help='Cell diameter in pixels')
+@click.option('--silent', default=False, help="Suppresses most of HCAT's logging ")
 def detect(f: str, curve_path, cell_detection_threshold, nms_threshold, save_xml, save_png,
-           save_fig, normalize, pixel_size, dtype, cell_diameter):
+           save_fig, normalize, pixel_size, dtype, cell_diameter, predict_curvature, silent):
 
     cell_diameter = float(cell_diameter) if cell_diameter is not None else None
     # Evaluate a single image
+
+    verbose = not silent
 
     files = glob.glob(f)
     for filename in files:
@@ -51,7 +55,10 @@ def detect(f: str, curve_path, cell_detection_threshold, nms_threshold, save_xml
                     normalize=normalize,
                     pixel_size=pixel_size,
                     cell_diameter=cell_diameter,
-                    dtype=dtype)
+                    dtype=dtype,
+                    predict_curve=predict_curvature,
+                    verbose=verbose)
+
         except Exception as e:
             print(f'Critical Error! Aborting - {filename}')
             raise e

@@ -25,20 +25,20 @@ __model_url__ = 'https://www.dropbox.com/s/opf43jwcbgz02vm/detection_trained_mod
 def _detect(f: Optional[str] = None,
             image_base: Optional[Tensor] = None,
             curve_path: str = None,
-            cell_detection_threshold: float = 0.57,
-            nms_threshold: float = 0.1,
+            cell_detection_threshold: float = 0.8,
+            nms_threshold: float = 0.3,
             dtype: Optional[bool] = None,
             model: Optional[FasterRCNN] = None,
             scale: Optional[int] = None,
             save_xml: Optional[bool] = False,
             save_fig: Optional[bool] = False,
             save_png: Optional[bool] = False,
-            save_csv: Optional[bool] = False,
+            save_csv: Optional[bool] = True,
             normalize: Optional[bool] = False,
             pixel_size: Optional[Union[bool, int, float]] = None,
             cell_diameter: Optional[Union[bool, int, float]] = None,
             return_model: Optional[bool] = False,
-            no_curve: Optional[bool] = False,
+            predict_curve: Optional[bool] = False,
             verbose: Optional[bool] = True):
     """
     HCAT detection algorithm.
@@ -62,7 +62,7 @@ def _detect(f: Optional[str] = None,
     :param pixel_size: X/Y pixel size (nm) of the input image. Will default to 288nm. Is mutually exclusive with cell_diameter.
     :param cell_diameter: The diameter of the cell in pixels. Will default to 30. Is mutually exclusive with pixel_size.
     :param return_model: Will return an instance of the Faster RCNN model used to detect hair cells.
-    :param no_curve: Will prevent HCAT from performing the cochlea path estimation.
+    :param predict_curve: Will enable HCAT to perform the cochlea path estimation.
     :param verbose: Will print to standard out each step of HCAT
 
     :return: A cochlea object of the detection analysis.
@@ -180,7 +180,7 @@ def _detect(f: Optional[str] = None,
     if verbose:
         print(f'Total Cells: {len(cells)}\n   OHC: {ohc}\n   IHC: {ihc}')
 
-    if not no_curve:
+    if predict_curve:
         max_projection: Tensor = image_base[[1], ...].mul(0.5).add(0.5).unsqueeze(-1).cpu()
         curvature, distance, apex = predict_curvature(max_projection, cells, curve_path)
 
