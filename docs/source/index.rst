@@ -6,6 +6,9 @@
 Welcome to HCAT's documentation!
 ================================
 
+.. include:: getting_started.md
+   :parser: myst_parser.sphinx_
+
 .. toctree::
    :caption: Analysis Entrypoints:
    :maxdepth: 5
@@ -18,11 +21,3 @@ Welcome to HCAT's documentation!
 
    src/lib
    src/backend
-
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`

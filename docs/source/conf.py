@@ -32,7 +32,8 @@ release = '0.1.0'
 # ones.
 extensions = [
     'sphinx.ext.autodoc',
-    'sphinx.ext.autodoc.typehints'
+    'sphinx.ext.autodoc.typehints',
+    'myst_parser'
 ]
 autodoc_typehints = 'description'
 autoclass_content = 'both'
