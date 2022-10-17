@@ -20,3 +20,4 @@ torchvision>=0.13.0
 tqdm==4.64.0
 wget==3.2
 myst_parser
+sphinx-rtd-theme

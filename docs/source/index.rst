@@ -6,18 +6,27 @@
 Welcome to HCAT's documentation!
 ================================
 
-.. include:: getting_started.md
+.. include:: src/introduction.md
    :parser: myst_parser.sphinx_
 
 .. toctree::
+   :caption: Instructions
+   :maxdepth: 2
+
+   src/installation.md
+   src/usage_guide.md
+   src/cli_instructions.md
+
+.. toctree::
    :caption: Analysis Entrypoints:
-   :maxdepth: 5
+   :maxdepth: 1
 
    detect
 
 .. toctree::
    :caption: API Guide:
-   :maxdepth: 3
+   :maxdepth: 1
 
    src/lib
    src/backend
+
