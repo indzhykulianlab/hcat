@@ -1,11 +1,10 @@
 # HCAT - Hair Cell Analysis Toolbox
 
 Hcat is a suite of machine learning enabled algorithms for performing common image analyses in the hearing field.
-At present, it performs two fully automated analyses: (1) 2D hair cell detection (2) Volumetric hair cell segmentation. 
+At present, it performs one fully automated analyses: (1) 2D hair cell detection
 
-
-This tool is capable of automatically generating cochleograms, determine cell fluorescent intensity statistics, and
-investigating tonotopic and morphological trends. 
+HCAT is highly accurate for most cochlear tissue, very fast, and easy to integrate into existing workflows!
+For full documentation, please visit: [hcat.readthedocs.io](https://hcat.readthedocs.io/en/latest/)
 
 ---
 ## Quickstart Guide
@@ -28,10 +27,6 @@ Detection Gui:
 
 CLI Hair Cell Detection Analysis:
 * Run in terminal: `hcat detect "path/to/file.tif"`
-
-CLI Segmentation Analysis (beta):
-* Run in terminal: `hcat segment "path/to/file.tif"`
-
 ---
 
 ## Requirements
@@ -161,7 +156,7 @@ cells: List[Cell] = cochlea.cells
 for cell in cells:
     print(cell.loc, cell.frequency) #location (x, y, z); frequency (Hz)
 ```
-
+Please visit the official documentation for more details!
 
 ---
 
@@ -175,58 +170,3 @@ for cell in cells:
    `Image` dropdown then clicking `type`, it should show either 8-bit or 16-bit.
 3. _**I cannot find the output**_: The program saves the output of each analysis as a CSV file with the same name
    in the same location as the original file! Beware, subsequent excecutions of this program will overwrite previous analysis files.
-### Segment (Beta)
-
----
-`hcat segment` is the entrypoint for volumetric segmentation of hair cells. The program will iteratively segment arbitrarily
-sized images, up to every hair cell in a cochlea. This is particularly useful for gene therapy studies, where nuanced measures
-of cell intensity may provide insight in the efficacy of a gene therapy construct. To evaluate an image, run the following in the 
-command line:
-
-`hcat segment [INPUT] [OPTIONS]`
-
-#### INPUT
-
-The program accepts volumetric confocal images of cochlea in the tiff format. The cells must be stained with a hair cell
-specific cytosol stain (usually anti-Myo7a), at either 8-bit or 16-bit resolution. The best performing images are 
-one with high signal-to-noise ratio, low background staining, and good separation between hair cells. 
-Confocal z-stacks postprocessed with deconvolution algorithms may only aid in segmentation accuracy.  
-
-#### OPTIONS                          
-    --channel                         (int) cytosolic channel index, (0 for greyscale)
-    --intesnity_reject_threshold      (float) Rejection for objects with mean cytosolic intensity below threshold
-    --dtype                           (str) Data type of input image: (uint8 or uint16)
-    --unet                            (flag) Generate segmentation masks with U Net + Watershed backbone
-    --cellpose                        (flag) Generate segmentation masks with 3D cellpose backbone
-    --figure                          (flag) Save a preliminary analysis figure
-    --no_post                         (experimental, flag) Disable postprocessing on detection
-
-#### OUTPUT
-
-The program will save two files with the same name and in the same location as the original file: `filename.csv` and
-`filename.cochlea`.
-* `filename.csv` contains human-readable data on each hair cell segmented in the original image.
-* `filename.cochlea` is a dataclass of the analysis which is accessible via the python programing language
-  and contains a compressed tensor array of the predicted segmentation mask.
-
-To access `filename.cochela` in a python script:
-
-```python
-import torch
-cochlea = torch.load('filename.cochlea')
-
-# If the mask is compressed
-cochlea.decompress_mask()
-predicted_segmentation_mask = cochlea.mask
-
-print('Mask Shape: ', predicted_segmentation_mask.shape)
-# Mask Shape: torch.Shape[5000,6000,35]
-```
-
-Alternativley you may access the cochlea object via the hcat package:
-
-```python
-from hcat.lib.cochlea import Cochlea
-
-cochela = Cochlea.load('filename.cochlea')
-```

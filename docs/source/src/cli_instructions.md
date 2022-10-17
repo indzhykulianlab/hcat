@@ -19,14 +19,17 @@ The program accepts confocal max-projected z-stacks of cochlear hair cells stain
 high signal-to-noise ratio and low background staining.
 
 ### OPTIONS
-    --cell_detection_threshold        (float) Rejection for objects with mean cytosolic intensity below threshold
     --curve_path                      (str) Path to collection of points for curve estimation
+    --cell_detection_threshold        (float) Rejection for objects with mean cytosolic intensity below threshold
+    --nms_threshold                   (float) Threshold [0, ..., 1] of allowable bounding box overlap
     --dtype                           (str) Data type of input image: (uint8 or uint16)
-    --save_fig                        (flag) Render diagnostic figure containing cell detection information
     --save_xml                        (flag) Save detections as xml format compatable with labelImg software
+    --save_fig                        (flag) Render diagnostic figure containing cell detection information
+    --save_png                        (flag) Saves a png image of analzed image
     --pixel_size                      (int) X/Y pixel size in nm
     --cell_diameter                   (int) Rough diameter of hair cell in pixels
-
+    --predict_curvature               (int) Enables whole cochlea curvature estimation and cell frequency assignment
+    --silent                          (float) Suppresses most of HCAT's logging
 
 ### OUTPUT
 
