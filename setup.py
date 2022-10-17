@@ -9,8 +9,7 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     packages=setuptools.find_packages(),
     python_requires='>=3.9',
-    entry_points={'console_scripts': ['hcat-segment=hcat.main:segment',
-                                      'hcat-detect=hcat.main:detect',
+    entry_points={'console_scripts': ['hcat-detect=hcat.main:detect',
                                       'hcat=hcat.main:cli']},
     install_requires=[
         'auto_mix_prep>=0.2.0',
@@ -20,7 +19,7 @@ setuptools.setup(
         'kornia>=0.6.5',
         'lz4>=4.0.1',
         'matplotlib>=3.5.1',
-        'numpy>=1.22.3',
+        'numpy>=1.22.0',
         'pandas>=1.4.2',
         'Pillow>=9.2.0',
         'psutil>=5.9.1',
