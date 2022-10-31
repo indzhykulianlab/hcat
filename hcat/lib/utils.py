@@ -281,7 +281,7 @@ def load(file: str, header_name: Optional[str] = 'TileScan 1 Merged',
         image_base = io.imread(file)
 
         if image_base.ndim == 4:
-            image_base = image_base.transpose((-1, 1, 2, 0))
+            image_base = image_base.transpose((-1, 1, 2, 0)).max(-1)
 
         elif image_base.ndim == 3 and np.array(
                 image_base.shape).min() > 4:  # Suppose you load a 3D image with one channel.
