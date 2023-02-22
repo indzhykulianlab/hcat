@@ -1,5 +1,6 @@
 from hcat.detect import _detect
 from hcat.detect_gui import gui
+import os.path
 
 import glob
 
@@ -32,7 +33,7 @@ def cli(ctx):
 @click.option('--normalize', is_flag=True, help='Threshold (between 0 and 1) of cell detection.')
 @click.option('--pixel_size', default=None, help='Pixel size in nm')
 @click.option('--cell_diameter', default=None, help='Cell diameter in pixels')
-@click.option('--predict_curvature', default=None, help='Cell diameter in pixels')
+@click.option('--predict_curvature', is_flag=True, help='Cell diameter in pixels')
 @click.option('--silent', default=False, help="Suppresses most of HCAT's logging ")
 def detect(f: str, curve_path, cell_detection_threshold, nms_threshold, save_xml, save_png,
            save_fig, normalize, pixel_size, dtype, cell_diameter, predict_curvature, silent):
@@ -44,6 +45,12 @@ def detect(f: str, curve_path, cell_detection_threshold, nms_threshold, save_xml
 
     files = glob.glob(f)
     for filename in files:
+        curve_path = filename[:-4:] + '_path.csv'
+        print('CURVE PATH: ', curve_path)
+
+        if not os.path.exists(filename[:-4:] + '_path.csv'):
+            raise ValueError(curve_path)
+
         try:
             _detect(f=filename,
                     curve_path=curve_path,

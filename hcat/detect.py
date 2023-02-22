@@ -189,7 +189,7 @@ def _detect(f: Optional[str] = None,
                  'limited. Consider Manual Calculation.', color='yellow')
 
         # curvature estimation really only works if there is a lot of tissue...
-        if distance is not None and distance.max() > 4000:
+        if distance is not None and distance.max() > 100:
             for c in cells: c.calculate_frequency(curvature[[0, 1], :], distance)  # calculate cell's best frequency
             cells = [c for c in cells if not c._distance_is_far_away]  # remove a cell if its far away from curve
 

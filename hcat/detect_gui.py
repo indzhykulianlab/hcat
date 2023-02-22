@@ -33,13 +33,14 @@ class gui:
     def __init__(self):
         sg.theme('DarkGrey5')
         plt.ioff()
+        device_str = 'CUDA' if torch.cuda.is_available() else 'CPU'
         # sg.set_options(font='Any')
 
         button_column = [
             [sg.FileBrowse(size=(16, 1), enable_events=True), ],
             [sg.Button('Load', size=(16, 1)), ],
             [sg.Button('Save', size=(16, 1))],
-            [sg.Button("⇦",k="previous_image", size=(4, 1)), sg.Push(), sg.Button("⇨", k="next_image", size=(4,1))],
+            [sg.Button("⇦", k="previous_image", size=(4, 1)), sg.Push(), sg.Button("⇨", k="next_image", size=(4,1))],
             [sg.HorizontalSeparator(p=(0, 20))],
             [sg.Text('Cell Diameter\n(In Pixels)')],
             [sg.Input(size=(10, 1), enable_events=True, default_text=30, key='Diameter'),
@@ -48,6 +49,12 @@ class gui:
             [sg.Slider(range=(0, 100), orientation='h', enable_events=True, default_value=80, key='Threshold', expand_x=True)],
             [sg.Text('Overlap Threshold')],
             [sg.Slider(range=(0, 100), orientation='h', enable_events=True, default_value=30, key='NMS', expand_x=True)],
+            [sg.HorizontalSeparator(p=(0, 20))],
+            [sg.Text('Model Selection', size=(15, 1), pad=(0, 10))],
+            [sg.FileBrowse(button_text='Select', k='select_model',
+                           size=(15, 1), enable_events=True, file_types=('Pytorch Model', '*.trch'))],
+            [sg.Button('Reset', k='reset_model', size=(15,1))],
+            [sg.Text('Default', k='model_selection_text', size=(15, 1))],
             [sg.HorizontalSeparator(p=(0, 20))],
             [sg.Button('Run Analysis', size=(15, 1))],
             [sg.Check(text=' Live Update', key='live_update', enable_events=True)],
@@ -96,6 +103,7 @@ class gui:
             [sg.HorizontalSeparator(pad=(0, 30))],
             [sg.Text('OHC: None', key='OHC_count')],
             [sg.Text('IHC: None', key='IHC_count')],
+            [sg.Text(f'Hardware Accelerator: {device_str}', key='device')]
         ]
 
         layout = [[sg.Column(button_column, vertical_alignment='Top'),
@@ -141,7 +149,10 @@ class gui:
         self.rgb = None
         self.contrast = None
         self.brightness = None
+
         self.model = None
+        self.model_path = None
+
         self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
         self.cochlea = None
 
@@ -153,7 +164,6 @@ class gui:
         self.labels = None
         self.scores = None
 
-        self.model = None
 
 
     def main_loop(self):
@@ -170,6 +180,22 @@ class gui:
 
             if event == 'pan':
                 print('CLICKED: ', values['pan'])
+
+            if event == 'select_model':
+                self.model_path = values['select_model']
+                self.window['model_selection_text'].update(f'Custom')
+                try:
+                    self.model = FasterRCNN_from_url(url=None, device=self.device, path=self.model_path)
+                except:
+                    sg.popup_ok('Could not load the model from file.')
+                    self.model_path = None
+                    self.window['model_selection_text'].update(f'Default')
+
+            if event == 'reset_model':
+                self.model_path = None
+                self.model = None
+                self.window['model_selection_text'].update(f'Default')
+
 
             if event == 'Exit' or event == sg.WIN_CLOSED:
                 return
@@ -201,7 +227,6 @@ class gui:
                     if os.path.split(f) == os.path.split(values['Browse']):
                         self.current_image_index = i
                         break
-
 
                 if self.valid_image_files[self.current_image_index] != values['Browse']:
                     print(f'{self.current_image_index}, {self.valid_image_files}')
@@ -283,8 +308,8 @@ class gui:
 
             if event == 'Run Analysis' and self.__LOADED__:
                 # self.run_detection_model()
-                self.fast_model()
-                self.threshold_and_nms(values['Threshold'], values['NMS'])
+                self.fast_model() # runs model on image...
+                self.threshold_and_nms(values['Threshold'], values['NMS']) # removing junk data
                 self.draw_image()
 
             if event in ['Threshold', 'NMS']:
@@ -566,7 +591,11 @@ class gui:
         if self.model is None:
             __model_url__ = 'https://www.dropbox.com/s/opf43jwcbgz02vm/detection_trained_model.trch?dl=1'
             sg.popup_quick_message('Loading model from file. May take a while.')
-            self.model = FasterRCNN_from_url(url=__model_url__, device=self.device)
+            try:
+                self.model = FasterRCNN_from_url(url=__model_url__, device=self.device)
+            except:
+                sg.popup_ok('Could not load the model from file.')
+                return None
 
         _image = self.scaled_image.clone()[0:3,...]
 

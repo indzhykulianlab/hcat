@@ -249,7 +249,7 @@ class Cochlea:
         :return: None
         """
         if self.analysis_type == 'segment':
-            label = 'cellID,frequency,percent_loc,x_loc,y_loc,z_loc,volume,summed,'
+            label = 'cellID,distance,frequency,percent_loc,x_loc,y_loc,z_loc,volume,summed,'
             for c in ['myo', 'dapi', 'actin', 'gfp']:
                 label += f'{c}_mean,{c}_median,{c}_std,{c}_var,{c}_min,{c}_max,{c}_%zero,{c}_%saturated,'
 
@@ -266,7 +266,7 @@ class Cochlea:
             f.write(label[:-1:] + '\n')  # index to remove final comma
 
             for cell in self.cells:
-                f.write(f'{cell.id},{cell.frequency},{cell.percent_loc},')
+                f.write(f'{cell.id},{cell.distance},{cell.frequency},{cell.percent_loc},')
                 f.write(f'{cell.loc[1]},{cell.loc[2]},{cell.loc[3]},{cell.volume},{cell.summed},')
 
                 for id in cell.channel_names:
@@ -277,7 +277,7 @@ class Cochlea:
                 f.write('\n')
             f.close()
         elif self.analysis_type == 'detect':
-            label = 'cellID,type,score,frequency,percent_loc,x_loc,y_loc'
+            label = 'cellID,type,score,distance,frequency,percent_loc,x_loc,y_loc'
 
             if filename is None and self.path is not None:
                 filename = os.path.splitext(self.path)[0] + '.csv'  # Remove .lif and add .csv
@@ -292,7 +292,7 @@ class Cochlea:
             f.write(label[:-1:] + '\n')  # index to remove final comma
 
             for cell in self.cells:
-                f.write(f'{cell.id},{cell.type},{cell.scores},{cell.frequency},{cell.percent_loc},')
+                f.write(f'{cell.id},{cell.type},{cell.scores},{cell.distance},{cell.frequency},{cell.percent_loc},')
                 f.write(f'{cell.loc[1]},{cell.loc[2]}')
                 f.write('\n')
             f.close()

@@ -30,7 +30,7 @@ def init_model():
     return HairCellConvNext
 
 
-def FasterRCNN_from_url(url: str, device: str):
+def FasterRCNN_from_url(url: str,  device: str, path: str = None):
     """
     Loads a FasterRCNN model from a url OR from a local source if available.
 
@@ -38,23 +38,23 @@ def FasterRCNN_from_url(url: str, device: str):
     :param device: Device to load the model to.
     :return:
     """
-    path = os.path.join(hcat.__path__[0], 'detection_trained_model.trch')
-    print(path)
 
-    # Research Purposes...
-    # convnext = '/home/chris/Dropbox (Partners HealthCare)/HairCellInstance/Max_project_detection_resnet_NeXT101_04March_2022_MinValidation.trch'
-    # convnext = '/home/chris/Dropbox (Partners HealthCare)/trainHairCellDetection/models/Apr05_09-52-47_CHRISUBUNTU.trch'
-    # convnext = '/home/chris/Dropbox (Partners HealthCare)/trainHairCellDetection/models/Apr25_10-08-35_CHRISUBUNTU.trch'
-    # convnext = '/home/chris/Dropbox (Partners HealthCare)/trainHairCellDetection/models/Jul15_17-25-42_CHRISUBUNTU.trch'
-    # convnext_nocommunitydata = '/media/DataStorage/Dropbox (Partners HealthCare)/HairCellInstance/models/Max_project_detection_resnet_NeXT101_28January_2022_eFinal_just_arturlabtrainingdata.trch'
+    if path is None:  # we dont have a user defined file...
+        path = os.path.join(hcat.__path__[0], 'detection_trained_model.trch')
+        if not os.path.exists(path):
+            wget.download(url=url, out=path) # this will download the file...
 
+    # Check if the path exists from the user...
     if not os.path.exists(path):
-        wget.download(url=url, out=path)
+        raise RuntimeError(f'Could not locate the file at path: {path}')
 
     model = init_model()
 
-    print(path)
-    checkpoint = torch.load(path, map_location=torch.device('cpu'))
+    try:
+        checkpoint = torch.load(path, map_location=torch.device('cpu'))
+    except:
+        raise RuntimeError(f'Could not load torch model from file: {path}')
+
     if 'model_state_dict' in checkpoint:
         checkpoint = checkpoint['model_state_dict']
     model = model.to(device)

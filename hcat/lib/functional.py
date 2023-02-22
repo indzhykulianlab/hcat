@@ -146,7 +146,12 @@ class PredictCurvature:
             3) The estimated apex of the cochlea
         """
         curvature, distance, apex = None, None, None
-        if self.method is None:
+
+        if csv is not None:
+            print('RUNNING EPL METHOD')
+            curvature, distance, apex = self.fitEPL(csv)
+
+        elif self.method is None:
             if csv is not None:
                 curvature, distance, apex = self.fitEPL(csv)
 

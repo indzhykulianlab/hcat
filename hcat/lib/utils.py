@@ -295,6 +295,8 @@ def load(file: str, header_name: Optional[str] = 'TileScan 1 Merged',
             pass
         elif image_base.ndim == 3 and image_base.shape[0] <= 4:  # Suppose you load a 2D image! with multiple channels
             pass
+        elif image_base.ndim == 2:
+            image_base = image_base[np.newaxis, ...]
         else:
             print(
                 f'\x1b[1;31;40m' + f'Cannot load: \'{file}\'. Unsupported number of dimmensions: {image_base.ndim}' + '\x1b[0m')
@@ -478,7 +480,7 @@ def cochlea_to_xml(cochlea, filename: str) -> None:
     tree.write(filename + '.xml')
 
 
-def normalize_image(image: Tensor, verbose: Optional[bool] = False) -> Tensor:
+def normalize_image(image: Tensor, *args, verbose: Optional[bool] = False) -> Tensor:
     """
     Normalizes each channel in an image such that a majority of the image lies between 0 and 1.
     Calculates the maximum value of the image following a gaussian blur with a 7x7 kernel size,
