@@ -1,0 +1,26 @@
+<!DOCTYPE RCC><RCC version="1.0">
+<qresource prefex="/">
+    <file>fonts/OfficeCodePro-Bold.ttf</file>
+    <file>fonts/OfficeCodePro-Light.ttf</file>
+    <file>fonts/OfficeCodePro-Medium.ttf</file>
+    <file>fonts/OfficeCodePro-Regular.ttf</file>
+    <file>fonts/Inconsolata-Black.ttf</file>
+    <file>fonts/Inconsolata-Regular.ttf</file>
+    <file>resources/splashscreen.png</file>
+    <file>resources/down_arrow.svg</file>
+    <file>resources/up_arrow.svg</file>
+    <file>resources/left_arrow.svg</file>
+    <file>resources/right_arrow.svg</file>
+    <file>resources/down_arrow_invert.svg</file>
+    <file>resources/up_arrow_invert.svg</file>
+    <file>resources/left_arrow_invert.svg</file>
+    <file>resources/right_arrow_invert.svg</file>
+    <file>resources/up_selector.svg</file>
+    <file>resources/down_selector.svg</file>
+    <file>resources/drag_handle.svg</file>
+    <file>resources/check.svg</file>
+    <file>resources/icon.ico</file>
+</qresource>
+</RCC>
+
+<!--pyside6-rcc resources.qrc -o hcat/gui/resources.py-->

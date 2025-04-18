@@ -1,0 +1,6 @@
+move everything from hcat to build/lib/
+REMOVE THE MODEL FILES AND DEPRECIATED SHIT
+update version number
+
+python3 setup.py sdist bdist_wheel
+twine upload dist/*
