@@ -17,3 +17,4 @@ To see a quick screen recording of the workflow, please see here: [Video Here](h
    2. Activate the new conda enviornment: `conda activate hcat`
    3. Install hcat with pip: `pip install hcat`
    4. launch hcat with your command line: `hcat`
+   5. NOTE: You will have to activate the conda environment every time you re-open the command line
